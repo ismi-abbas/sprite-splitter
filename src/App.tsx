@@ -101,6 +101,18 @@ function toGridInteger(value: number, fallback: number) {
   return Math.max(1, Math.round(toFiniteNumber(value, fallback)));
 }
 
+function detectFrameSizeFromGrid(config: SplitConfig, image: LoadedImage) {
+  const widthAvailable =
+    image.width - config.offsetX - (config.columns - 1) * config.gapX;
+  const heightAvailable =
+    image.height - config.offsetY - (config.rows - 1) * config.gapY;
+
+  return {
+    frameWidth: Math.max(1, Math.floor(widthAvailable / config.columns)),
+    frameHeight: Math.max(1, Math.floor(heightAvailable / config.rows)),
+  };
+}
+
 function createCanvas(width: number, height: number) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
@@ -554,11 +566,27 @@ function App() {
                 : 1,
               toFiniteNumber(value, currentValue),
             );
-
-      return {
+      const nextConfig = {
         ...current,
         [key]: nextValue,
       };
+
+      if (
+        sourceImage &&
+        (key === "columns" ||
+          key === "rows" ||
+          key === "offsetX" ||
+          key === "offsetY" ||
+          key === "gapX" ||
+          key === "gapY")
+      ) {
+        return {
+          ...nextConfig,
+          ...detectFrameSizeFromGrid(nextConfig, sourceImage),
+        };
+      }
+
+      return nextConfig;
     });
   }
 
@@ -638,7 +666,7 @@ function App() {
     nudgeSelectedRegion(delta[0], delta[1], resize);
   }
 
-  function splitFrames() {
+  function respliceRegions() {
     const nextRegions = splitRegionsForImage(splitConfig, sourceImage);
     setRegions(nextRegions);
     setSelectedFrame(0);
@@ -649,7 +677,48 @@ function App() {
       rows: splitConfig.rows,
     }));
     setStatus(
-      `Generated ${nextRegions.length} regions from a ${splitConfig.columns}x${splitConfig.rows} grid.`,
+      `Respliced ${nextRegions.length} regions from a ${splitConfig.columns}x${splitConfig.rows} grid.`,
+    );
+  }
+
+  function addRegion() {
+    if (!sourceImage) return;
+
+    const nextRegion = clampRegion(
+      regionFromGridIndex(splitConfig, regions.length),
+      sourceImage,
+    );
+    const nextRegions = [...regions, nextRegion];
+    const nextSelectedFrame = nextRegions.length - 1;
+    const nextRows = Math.max(
+      splitConfig.rows,
+      Math.ceil(nextRegions.length / splitConfig.columns),
+    );
+
+    setRegions(nextRegions);
+    setSelectedFrame(nextSelectedFrame);
+    setPlayhead(nextSelectedFrame);
+    setSplitConfig((current) => ({ ...current, rows: nextRows }));
+    setExportConfig((current) => ({
+      ...current,
+      rows: Math.max(current.rows, Math.ceil(nextRegions.length / current.columns)),
+    }));
+    setStatus(`Added region #${nextRegions.length}. Existing regions were preserved.`);
+  }
+
+  function removeSelectedRegion() {
+    if (!sourceImage || regions.length === 0) return;
+
+    const nextRegions = regions.filter((_, index) => index !== selectedFrame);
+    const nextSelectedFrame = clamp(selectedFrame, 0, Math.max(nextRegions.length - 1, 0));
+
+    setRegions(nextRegions);
+    setSelectedFrame(nextSelectedFrame);
+    setPlayhead(nextSelectedFrame);
+    setStatus(
+      nextRegions.length === 0
+        ? "Removed the last region. Add a region or resplice the grid to continue."
+        : `Removed region #${selectedFrame + 1}. ${nextRegions.length} regions remain.`,
     );
   }
 
@@ -959,11 +1028,11 @@ function App() {
               <button
                 type="button"
                 className={primaryButtonClass}
-                onClick={splitFrames}
+                onClick={respliceRegions}
                 disabled={!sourceImage}
                 aria-describedby="status-message"
               >
-                Apply split grid
+                Resplice grid
               </button>
             </div>
 
@@ -978,6 +1047,27 @@ function App() {
               Each frame has its own left, top, width, and height. After splitting, every box can
               move and resize independently.
             </p>
+
+            <div className="control-actions grid gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={addRegion}
+                disabled={!sourceImage}
+                aria-describedby="status-message"
+              >
+                Add region
+              </button>
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={removeSelectedRegion}
+                disabled={!sourceImage || regions.length === 0}
+                aria-describedby="status-message"
+              >
+                Remove selected
+              </button>
+            </div>
 
             <div className="control-grid grid sm:grid-cols-2 xl:grid-cols-2">
               {[
