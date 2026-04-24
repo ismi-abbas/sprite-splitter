@@ -60,8 +60,7 @@
 @layer components {
   .app-backdrop {
     background:
-      linear-gradient(90deg, var(--color-app-scanline) 1px, transparent 1px) 0
-        0 / 28px 28px,
+      linear-gradient(90deg, var(--color-app-scanline) 1px, transparent 1px) 0 0 / 28px 28px,
       radial-gradient(
         circle at 12% 0%,
         color-mix(in oklch, var(--color-app-accent) 14%, transparent),
@@ -237,35 +236,15 @@
     background:
       linear-gradient(
         45deg,
-        color-mix(
-            in oklch,
-            var(--color-app-surface) 82%,
-            var(--color-app-ink) 18%
-          )
-          25%,
+        color-mix(in oklch, var(--color-app-surface) 82%, var(--color-app-ink) 18%) 25%,
         transparent 25% 75%,
-        color-mix(
-            in oklch,
-            var(--color-app-surface) 82%,
-            var(--color-app-ink) 18%
-          )
-          75%
+        color-mix(in oklch, var(--color-app-surface) 82%, var(--color-app-ink) 18%) 75%
       ),
       linear-gradient(
         45deg,
-        color-mix(
-            in oklch,
-            var(--color-app-surface) 82%,
-            var(--color-app-ink) 18%
-          )
-          25%,
+        color-mix(in oklch, var(--color-app-surface) 82%, var(--color-app-ink) 18%) 25%,
         transparent 25% 75%,
-        color-mix(
-            in oklch,
-            var(--color-app-surface) 82%,
-            var(--color-app-ink) 18%
-          )
-          75%
+        color-mix(in oklch, var(--color-app-surface) 82%, var(--color-app-ink) 18%) 75%
       ),
       var(--color-app-recessed);
     background-position:
@@ -276,6 +255,17 @@
       16px 16px,
       16px 16px,
       auto;
+  }
+
+  .preview-shell {
+    height: clamp(16rem, 34vw, 22rem);
+  }
+
+  .preview-frame {
+    max-width: min(18rem, 100%);
+    max-height: 100%;
+    width: auto;
+    height: auto;
   }
 
   .region-box {
@@ -289,22 +279,14 @@
   }
 
   .region-box-active {
-    background: color-mix(
-      in oklch,
-      var(--color-app-accent) 9%,
-      transparent
-    );
+    background: color-mix(in oklch, var(--color-app-accent) 9%, transparent);
     box-shadow:
       inset 0 0 0 1px color-mix(in oklch, var(--color-app-ink) 42%, transparent),
       inset 0 0 0 2px color-mix(in oklch, var(--color-app-accent-strong) 88%, transparent);
   }
 
   .frame-card-active {
-    background: color-mix(
-      in oklch,
-      var(--color-app-accent) 16%,
-      var(--color-app-raised)
-    );
+    background: color-mix(in oklch, var(--color-app-accent) 16%, var(--color-app-raised));
   }
 
   .region-box:focus-visible,
