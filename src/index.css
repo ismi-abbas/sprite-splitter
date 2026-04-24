@@ -1,0 +1,96 @@
+@import url("https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&family=Sora:wght@500;600;700&display=swap");
+
+:root {
+  --bg: oklch(0.15 0.02 258);
+  --surface: oklch(0.2 0.03 258);
+  --surface-raised: oklch(0.24 0.03 258);
+  --border-muted: oklch(0.38 0.03 258 / 0.85);
+  --border-strong: oklch(0.52 0.06 140 / 0.45);
+  --text-soft: oklch(0.77 0.02 220);
+  --text-strong: oklch(0.96 0.01 180);
+  --accent: oklch(0.8 0.17 145);
+  --accent-strong: oklch(0.79 0.18 145);
+  --ink: oklch(0.16 0.02 250);
+  --shadow-soft: 0 24px 48px color-mix(in oklch, black 22%, transparent);
+
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+
+  font-family: "Onest", sans-serif;
+  line-height: 1.55;
+  font-weight: 400;
+  color: var(--text-strong);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background:
+    radial-gradient(
+      circle at top,
+      color-mix(in oklch, var(--accent) 10%, transparent),
+      transparent 40%
+    ),
+    var(--bg);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+body,
+button,
+input {
+  font-family: "Onest", sans-serif;
+}
+
+button {
+  border-radius: 0;
+}
+
+#root {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+}
+
+h1,
+h2 {
+  font-family: "Sora", sans-serif;
+  color: var(--text-strong);
+  letter-spacing: -0.04em;
+}
+
+h1 {
+  font-size: clamp(2.5rem, 4vw, 4.8rem);
+  line-height: 0.98;
+  max-width: 11ch;
+}
+
+h2 {
+  font-size: 1.2rem;
+  line-height: 1.1;
+}
+
+p {
+  max-width: 65ch;
+}
+
+a {
+  color: inherit;
+}
+
+input[type="range"] {
+  padding: 0;
+  accent-color: var(--accent);
+}
