@@ -8,11 +8,14 @@
   --color-app-bg: oklch(0.15 0.02 258);
   --color-app-surface: oklch(0.2 0.03 258);
   --color-app-raised: oklch(0.24 0.03 258);
+  --color-app-recessed: oklch(0.13 0.025 258);
   --color-app-border: oklch(0.52 0.06 140 / 0.45);
   --color-app-text: oklch(0.96 0.01 180);
   --color-app-muted: oklch(0.77 0.02 220);
   --color-app-accent: oklch(0.8 0.17 145);
   --color-app-accent-strong: oklch(0.79 0.18 145);
+  --color-app-warm: oklch(0.79 0.15 70);
+  --color-app-scanline: oklch(0.72 0.12 170 / 0.1);
   --color-app-ink: oklch(0.16 0.02 250);
 
   --shadow-panel: 0 24px 48px color-mix(in oklch, black 22%, transparent);
@@ -39,7 +42,8 @@
   }
 
   button,
-  input {
+  input,
+  select {
     font: inherit;
   }
 
@@ -53,6 +57,349 @@
   }
 }
 
-.debug {
-  border: 1px solid red;
+@layer components {
+  .app-backdrop {
+    background:
+      linear-gradient(90deg, var(--color-app-scanline) 1px, transparent 1px) 0
+        0 / 28px 28px,
+      radial-gradient(
+        circle at 12% 0%,
+        color-mix(in oklch, var(--color-app-accent) 14%, transparent),
+        transparent 34rem
+      ),
+      radial-gradient(
+        circle at 90% 14%,
+        color-mix(in oklch, var(--color-app-warm) 10%, transparent),
+        transparent 28rem
+      ),
+      var(--color-app-bg);
+  }
+
+  .hero-shell {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero-shell::before {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    background:
+      linear-gradient(
+        135deg,
+        transparent 0 54%,
+        color-mix(in oklch, var(--color-app-accent) 13%, transparent) 54% 55%,
+        transparent 55%
+      ),
+      linear-gradient(
+        90deg,
+        color-mix(in oklch, var(--color-app-warm) 22%, transparent),
+        transparent 12rem
+      );
+    opacity: 0.65;
+  }
+
+  .hero-shell > * {
+    position: relative;
+  }
+
+  .hero-shell .control-button {
+    min-height: 3rem;
+  }
+
+  .panel-shell {
+    clip-path: polygon(
+      0 0,
+      calc(100% - 10px) 0,
+      100% 10px,
+      100% 100%,
+      10px 100%,
+      0 calc(100% - 10px)
+    );
+  }
+
+  .editor-panel {
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--color-app-accent) 5%, transparent),
+        transparent 13rem
+      ),
+      var(--color-app-surface);
+  }
+
+  .editor-toolbar {
+    align-content: start;
+  }
+
+  .region-readout {
+    max-width: 42rem;
+  }
+
+  .region-stat {
+    border: 1px solid color-mix(in oklch, var(--color-app-border) 82%, transparent);
+    background: color-mix(in oklch, var(--color-app-raised) 86%, var(--color-app-bg));
+    padding: 0.65rem 0.75rem;
+  }
+
+  .region-stat dt {
+    margin: 0 0 0.2rem;
+    color: var(--color-app-muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .region-stat dd {
+    margin: 0;
+    color: var(--color-app-text);
+    font-size: 1.35rem;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .control-grid {
+    gap: 0.85rem;
+  }
+
+  .control-field {
+    align-content: start;
+    gap: 0.45rem;
+  }
+
+  .control-field > span {
+    min-height: 1.35rem;
+    font-size: 0.88rem;
+    line-height: 1.2;
+  }
+
+  .control-input,
+  .control-button {
+    min-height: 3.35rem;
+    border-color: color-mix(in oklch, var(--color-app-border) 82%, transparent);
+    line-height: 1.1;
+  }
+
+  .control-input {
+    width: 100%;
+    font-size: 1rem;
+    font-variant-numeric: tabular-nums;
+    background:
+      linear-gradient(
+        180deg,
+        color-mix(in oklch, var(--color-app-text) 3%, transparent),
+        transparent
+      ),
+      var(--color-app-raised);
+  }
+
+  .control-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    font-size: 0.98rem;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .control-actions {
+    align-items: stretch;
+  }
+
+  .stage-shell {
+    contain: layout paint;
+    touch-action: none;
+  }
+
+  .stage-shell::after,
+  .preview-shell::after,
+  .frame-well::after {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    content: "";
+    background-image: linear-gradient(
+      color-mix(in oklch, var(--color-app-text) 7%, transparent) 1px,
+      transparent 1px
+    );
+    background-size: 100% 4px;
+    opacity: 0.22;
+  }
+
+  .preview-shell,
+  .frame-well {
+    position: relative;
+    background:
+      linear-gradient(
+        45deg,
+        color-mix(
+            in oklch,
+            var(--color-app-surface) 82%,
+            var(--color-app-ink) 18%
+          )
+          25%,
+        transparent 25% 75%,
+        color-mix(
+            in oklch,
+            var(--color-app-surface) 82%,
+            var(--color-app-ink) 18%
+          )
+          75%
+      ),
+      linear-gradient(
+        45deg,
+        color-mix(
+            in oklch,
+            var(--color-app-surface) 82%,
+            var(--color-app-ink) 18%
+          )
+          25%,
+        transparent 25% 75%,
+        color-mix(
+            in oklch,
+            var(--color-app-surface) 82%,
+            var(--color-app-ink) 18%
+          )
+          75%
+      ),
+      var(--color-app-recessed);
+    background-position:
+      0 0,
+      8px 8px,
+      0 0;
+    background-size:
+      16px 16px,
+      16px 16px,
+      auto;
+  }
+
+  .region-box {
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--color-app-ink) 24%, transparent),
+      inset 0 0 0 2px color-mix(in oklch, var(--color-app-accent) 58%, transparent);
+  }
+
+  .region-box-idle {
+    background: color-mix(in oklch, var(--color-app-accent) 10%, transparent);
+  }
+
+  .region-box-active {
+    background: color-mix(
+      in oklch,
+      var(--color-app-accent) 9%,
+      transparent
+    );
+    box-shadow:
+      inset 0 0 0 1px color-mix(in oklch, var(--color-app-ink) 42%, transparent),
+      inset 0 0 0 2px color-mix(in oklch, var(--color-app-accent-strong) 88%, transparent);
+  }
+
+  .frame-card-active {
+    background: color-mix(
+      in oklch,
+      var(--color-app-accent) 16%,
+      var(--color-app-raised)
+    );
+  }
+
+  .region-box:focus-visible,
+  .frame-card:focus-visible {
+    outline: 2px solid var(--color-app-warm);
+    outline-offset: 3px;
+  }
+
+  .resize-handle::after {
+    position: absolute;
+    content: "";
+    background: var(--color-app-accent-strong);
+    box-shadow:
+      0 0 0 1px color-mix(in oklch, var(--color-app-ink) 45%, transparent),
+      0 0 8px color-mix(in oklch, var(--color-app-accent) 22%, transparent);
+  }
+
+  .resize-handle-corner::after {
+    inset: 18px;
+  }
+
+  .resize-handle-left::after,
+  .resize-handle-right::after {
+    top: 0;
+    bottom: 0;
+    left: 20px;
+    width: 3px;
+  }
+
+  .resize-handle-top::after,
+  .resize-handle-bottom::after {
+    right: 0;
+    left: 0;
+    top: 20px;
+    height: 3px;
+  }
+
+  .frame-strip {
+    max-height: 42vh;
+    overflow: auto;
+    overscroll-behavior: contain;
+    padding-right: 0.25rem;
+  }
+
+  @media (max-width: 767px) {
+    .workspace-grid {
+      grid-template-areas:
+        "editor"
+        "split"
+        "preview";
+    }
+
+    .workspace-grid > :nth-child(1) {
+      grid-area: split;
+    }
+
+    .workspace-grid > :nth-child(2) {
+      grid-area: editor;
+    }
+
+    .workspace-grid > :nth-child(3) {
+      grid-area: preview;
+    }
+
+    .panel-shell {
+      clip-path: none;
+    }
+
+    .stage-shell {
+      max-height: 62vh;
+      overflow: auto;
+    }
+
+    .frame-strip {
+      display: flex;
+      max-height: none;
+      overflow-x: auto;
+      padding-bottom: 0.35rem;
+      scroll-snap-type: x proximity;
+    }
+
+    .frame-card {
+      min-width: 7rem;
+      scroll-snap-align: start;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+    }
+  }
 }

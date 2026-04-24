@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { GIFEncoder, applyPalette, quantize } from "gifenc";
+import { useEffect, useMemo, useState } from "react";
 
-type SliceConfig = {
+type SplitConfig = {
   columns: number;
   rows: number;
   frameWidth: number;
@@ -11,11 +12,19 @@ type SliceConfig = {
   gapY: number;
 };
 
-type FrameAdjustment = {
-  dx: number;
-  dy: number;
-  dw: number;
-  dh: number;
+type ExportConfig = {
+  columns: number;
+  rows: number;
+  frameWidth: number;
+  frameHeight: number;
+  preset: ExportPreset;
+};
+
+type Region = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 type LoadedImage = {
@@ -26,6 +35,7 @@ type LoadedImage = {
 };
 
 type ResizeMode =
+  | "move"
   | "left"
   | "right"
   | "top"
@@ -39,23 +49,22 @@ type DragState = {
   mode: ResizeMode;
   startX: number;
   startY: number;
-  startDx: number;
-  startDy: number;
-  startDw: number;
-  startDh: number;
+  stageWidth: number;
+  stageHeight: number;
+  startRegion: Region;
+  previewRegion: Region;
+  frameIndex: number;
 };
 
-type ExtractedFrame = {
-  index: number;
-  column: number;
-  row: number;
-  sx: number;
-  sy: number;
-  sw: number;
-  sh: number;
-};
+type ExportPreset =
+  | "snes-16"
+  | "snes-32"
+  | "snes-64"
+  | "snes-16x32"
+  | "snes-32x64"
+  | "custom";
 
-const DEFAULT_CONFIG: SliceConfig = {
+const DEFAULT_SPLIT: SplitConfig = {
   columns: 4,
   rows: 1,
   frameWidth: 256,
@@ -66,35 +75,48 @@ const DEFAULT_CONFIG: SliceConfig = {
   gapY: 0,
 };
 
-const EMPTY_ADJUSTMENT: FrameAdjustment = {
-  dx: 0,
-  dy: 0,
-  dw: 0,
-  dh: 0,
+const DEFAULT_EXPORT: ExportConfig = {
+  columns: 4,
+  rows: 1,
+  frameWidth: 32,
+  frameHeight: 32,
+  preset: "snes-32",
 };
 
 const panelClass =
-  "grid gap-4 border border-app-border bg-app-surface p-4 shadow-panel md:p-6";
+  "panel-shell grid gap-4 border border-app-border bg-app-surface p-4 shadow-panel md:p-6";
 const eyebrowClass =
   "m-0 text-[0.72rem] uppercase tracking-[0.18em] text-app-muted";
-const fieldClass = "grid gap-2";
+const fieldClass = "control-field grid gap-2";
 const inputClass =
-  "min-h-11 border border-app-border/90 bg-app-raised px-3.5 py-3 text-app-text outline-none transition focus:border-app-accent focus:ring-2 focus:ring-app-accent/60";
+  "control-input min-h-11 border border-app-border/90 bg-app-raised px-3.5 py-3 text-app-text outline-none transition focus:border-app-accent focus:ring-2 focus:ring-app-accent/60 disabled:cursor-not-allowed disabled:opacity-55";
 const secondaryButtonClass =
-  "min-h-11 border border-app-border bg-app-raised px-4 py-3 text-app-text transition enabled:hover:-translate-y-px enabled:hover:border-app-accent/70 disabled:cursor-not-allowed disabled:opacity-50";
+  "control-button min-h-11 border border-app-border bg-app-raised px-4 py-3 text-app-text transition enabled:hover:-translate-y-px enabled:hover:border-app-accent/70 enabled:active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50";
 const primaryButtonClass =
-  "min-h-11 border border-app-accent-strong bg-app-accent-strong px-4 py-3 text-app-ink transition enabled:hover:-translate-y-px enabled:hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50";
-const handleBaseClass = "absolute z-10 block bg-app-accent-strong";
+  "control-button min-h-11 border border-app-accent-strong bg-app-accent-strong px-4 py-3 text-app-ink transition enabled:hover:-translate-y-px enabled:hover:brightness-105 enabled:active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-50";
+const handleBaseClass = "resize-handle absolute z-10 block";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
 
-function createAdjustmentArray(length: number) {
-  return Array.from({ length }, () => ({ ...EMPTY_ADJUSTMENT }));
+function createCanvas(width: number, height: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  return canvas;
 }
 
-function guessConfig(width: number, height: number): SliceConfig {
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function guessSplitConfig(width: number, height: number): SplitConfig {
   if (width >= height * 2) {
     const columns = clamp(Math.round(width / height), 2, 12);
     return {
@@ -121,153 +143,224 @@ function guessConfig(width: number, height: number): SliceConfig {
   };
 }
 
-function createCanvas(width: number, height: number) {
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  return canvas;
+function guessExportPreset(width: number, height: number): ExportConfig {
+  const largest = Math.max(width, height);
+
+  if (width <= 16 && height <= 16) {
+    return { columns: 4, rows: 4, frameWidth: 16, frameHeight: 16, preset: "snes-16" };
+  }
+
+  if (width <= 16 && height <= 32) {
+    return { columns: 4, rows: 4, frameWidth: 16, frameHeight: 32, preset: "snes-16x32" };
+  }
+
+  if (width <= 32 && height <= 32) {
+    return { columns: 4, rows: 4, frameWidth: 32, frameHeight: 32, preset: "snes-32" };
+  }
+
+  if (width <= 32 && height <= 64) {
+    return { columns: 4, rows: 4, frameWidth: 32, frameHeight: 64, preset: "snes-32x64" };
+  }
+
+  if (largest <= 64) {
+    return { columns: 4, rows: 4, frameWidth: 64, frameHeight: 64, preset: "snes-64" };
+  }
+
+  return {
+    columns: 4,
+    rows: 4,
+    frameWidth: Math.max(1, width),
+    frameHeight: Math.max(1, height),
+    preset: "custom",
+  };
 }
 
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
+function presetToSize(preset: ExportPreset) {
+  switch (preset) {
+    case "snes-16":
+      return { width: 16, height: 16 };
+    case "snes-32":
+      return { width: 32, height: 32 };
+    case "snes-64":
+      return { width: 64, height: 64 };
+    case "snes-16x32":
+      return { width: 16, height: 32 };
+    case "snes-32x64":
+      return { width: 32, height: 64 };
+    case "custom":
+      return null;
+  }
 }
 
-function getFrameImageUrl(image: HTMLImageElement, frame: ExtractedFrame) {
-  const canvas = createCanvas(frame.sw, frame.sh);
+function splitRegionsFromGrid(config: SplitConfig) {
+  const count = config.columns * config.rows;
+  return Array.from({ length: count }, (_, index) => {
+    const column = index % config.columns;
+    const row = Math.floor(index / config.columns);
+    return {
+      x: config.offsetX + column * (config.frameWidth + config.gapX),
+      y: config.offsetY + row * (config.frameHeight + config.gapY),
+      width: config.frameWidth,
+      height: config.frameHeight,
+    };
+  });
+}
+
+function clampRegion(region: Region, image: LoadedImage) {
+  const x = clamp(region.x, 0, image.width - 1);
+  const y = clamp(region.y, 0, image.height - 1);
+  const width = clamp(region.width, 1, image.width - x);
+  const height = clamp(region.height, 1, image.height - y);
+  return { x, y, width, height };
+}
+
+function getDraggedRegion(mode: ResizeMode, deltaX: number, deltaY: number, start: Region) {
+  switch (mode) {
+    case "move":
+      return { ...start, x: start.x + deltaX, y: start.y + deltaY };
+    case "left":
+      return {
+        ...start,
+        x: start.x + deltaX,
+        width: start.width - deltaX,
+      };
+    case "right":
+      return { ...start, width: start.width + deltaX };
+    case "top":
+      return {
+        ...start,
+        y: start.y + deltaY,
+        height: start.height - deltaY,
+      };
+    case "bottom":
+      return { ...start, height: start.height + deltaY };
+    case "top-left":
+      return {
+        x: start.x + deltaX,
+        y: start.y + deltaY,
+        width: start.width - deltaX,
+        height: start.height - deltaY,
+      };
+    case "top-right":
+      return {
+        x: start.x,
+        y: start.y + deltaY,
+        width: start.width + deltaX,
+        height: start.height - deltaY,
+      };
+    case "bottom-left":
+      return {
+        x: start.x + deltaX,
+        y: start.y,
+        width: start.width - deltaX,
+        height: start.height + deltaY,
+      };
+    case "bottom-right":
+      return {
+        x: start.x,
+        y: start.y,
+        width: start.width + deltaX,
+        height: start.height + deltaY,
+      };
+  }
+}
+
+function drawRegionToCanvas(
+  ctx: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  region: Region,
+  outputWidth: number,
+  outputHeight: number,
+  offsetX = 0,
+  offsetY = 0,
+) {
+  const dx = offsetX + Math.floor((outputWidth - region.width) / 2);
+  const dy = offsetY + Math.floor((outputHeight - region.height) / 2);
+  ctx.drawImage(image, region.x, region.y, region.width, region.height, dx, dy, region.width, region.height);
+}
+
+function getFrameImageUrl(
+  image: HTMLImageElement,
+  region: Region,
+  outputWidth: number,
+  outputHeight: number,
+) {
+  const canvas = createCanvas(outputWidth, outputHeight);
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
 
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(
-    image,
-    frame.sx,
-    frame.sy,
-    frame.sw,
-    frame.sh,
-    0,
-    0,
-    frame.sw,
-    frame.sh,
-  );
+  drawRegionToCanvas(ctx, image, region, outputWidth, outputHeight);
   return canvas.toDataURL("image/png");
 }
 
-function getSquareResize(
-  mode: ResizeMode,
-  deltaX: number,
-  deltaY: number,
-  start: FrameAdjustment,
+async function loadHtmlImage(src: string) {
+  const image = new Image();
+  image.src = src;
+
+  await new Promise<void>((resolve) => {
+    if (image.complete) {
+      resolve();
+      return;
+    }
+    image.onload = () => resolve();
+  });
+
+  return image;
+}
+
+function renderRegionCanvas(
+  image: HTMLImageElement,
+  region: Region,
+  outputWidth: number,
+  outputHeight: number,
 ) {
-  switch (mode) {
-    case "right": {
-      const sizeDelta = deltaX;
-      return {
-        dx: start.dx,
-        dy: start.dy,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "bottom": {
-      const sizeDelta = deltaY;
-      return {
-        dx: start.dx,
-        dy: start.dy,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "left": {
-      const sizeDelta = -deltaX;
-      return {
-        dx: start.dx - sizeDelta,
-        dy: start.dy,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "top": {
-      const sizeDelta = -deltaY;
-      return {
-        dx: start.dx,
-        dy: start.dy - sizeDelta,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "top-left": {
-      const sizeDelta =
-        Math.abs(deltaX) >= Math.abs(deltaY) ? -deltaX : -deltaY;
-      return {
-        dx: start.dx - sizeDelta,
-        dy: start.dy - sizeDelta,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "top-right": {
-      const sizeDelta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : -deltaY;
-      return {
-        dx: start.dx,
-        dy: start.dy - sizeDelta,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "bottom-left": {
-      const sizeDelta = Math.abs(deltaX) >= Math.abs(deltaY) ? -deltaX : deltaY;
-      return {
-        dx: start.dx - sizeDelta,
-        dy: start.dy,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-    case "bottom-right": {
-      const sizeDelta = Math.abs(deltaX) >= Math.abs(deltaY) ? deltaX : deltaY;
-      return {
-        dx: start.dx,
-        dy: start.dy,
-        dw: start.dw + sizeDelta,
-        dh: start.dh + sizeDelta,
-      };
-    }
-  }
+  const canvas = createCanvas(outputWidth, outputHeight);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.imageSmoothingEnabled = false;
+  drawRegionToCanvas(ctx, image, region, outputWidth, outputHeight);
+  return { canvas, ctx };
+}
+
+function getTransparentPaletteIndex(palette: number[][]) {
+  const transparentIndex = palette.findIndex((color) => color[3] === 0);
+  return transparentIndex >= 0 ? transparentIndex : 0;
 }
 
 function getHandleClass(mode: ResizeMode) {
   switch (mode) {
     case "left":
-      return `${handleBaseClass} -left-[3px] top-0 h-full w-[6px] cursor-ew-resize`;
+      return `${handleBaseClass} resize-handle-edge resize-handle-left -left-[22px] top-0 h-full w-11 cursor-ew-resize`;
     case "right":
-      return `${handleBaseClass} -right-[3px] top-0 h-full w-[6px] cursor-ew-resize`;
+      return `${handleBaseClass} resize-handle-edge resize-handle-right -right-[22px] top-0 h-full w-11 cursor-ew-resize`;
     case "top":
-      return `${handleBaseClass} -top-[3px] left-0 h-[6px] w-full cursor-ns-resize`;
+      return `${handleBaseClass} resize-handle-edge resize-handle-top -top-[22px] left-0 h-11 w-full cursor-ns-resize`;
     case "bottom":
-      return `${handleBaseClass} -bottom-[3px] left-0 h-[6px] w-full cursor-ns-resize`;
+      return `${handleBaseClass} resize-handle-edge resize-handle-bottom -bottom-[22px] left-0 h-11 w-full cursor-ns-resize`;
     case "top-left":
-      return `${handleBaseClass} -left-[5px] -top-[5px] h-3 w-3 cursor-nwse-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+      return `${handleBaseClass} resize-handle-corner -left-[22px] -top-[22px] h-11 w-11 cursor-nwse-resize`;
     case "top-right":
-      return `${handleBaseClass} -right-[5px] -top-[5px] h-3 w-3 cursor-nesw-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+      return `${handleBaseClass} resize-handle-corner -right-[22px] -top-[22px] h-11 w-11 cursor-nesw-resize`;
     case "bottom-left":
-      return `${handleBaseClass} -bottom-[5px] -left-[5px] h-3 w-3 cursor-nesw-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+      return `${handleBaseClass} resize-handle-corner -bottom-[22px] -left-[22px] h-11 w-11 cursor-nesw-resize`;
     case "bottom-right":
-      return `${handleBaseClass} -bottom-[5px] -right-[5px] h-3 w-3 cursor-nwse-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+      return `${handleBaseClass} resize-handle-corner -bottom-[22px] -right-[22px] h-11 w-11 cursor-nwse-resize`;
+    case "move":
+      return "";
   }
 }
 
+function getRegionSummary(region: Region) {
+  return `left ${region.x}, top ${region.y}, width ${region.width}, height ${region.height}`;
+}
+
 function App() {
-  const sourceStageRef = useRef<HTMLDivElement | null>(null);
   const [sourceImage, setSourceImage] = useState<LoadedImage | null>(null);
-  const [config, setConfig] = useState<SliceConfig>(DEFAULT_CONFIG);
-  const [adjustments, setAdjustments] = useState<FrameAdjustment[]>(
-    createAdjustmentArray(4),
-  );
+  const [splitConfig, setSplitConfig] = useState<SplitConfig>(DEFAULT_SPLIT);
+  const [exportConfig, setExportConfig] = useState<ExportConfig>(DEFAULT_EXPORT);
+  const [regions, setRegions] = useState<Region[]>(splitRegionsFromGrid(DEFAULT_SPLIT));
   const [selectedFrame, setSelectedFrame] = useState(0);
   const [fps, setFps] = useState(8);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -275,28 +368,19 @@ function App() {
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [frameImageUrls, setFrameImageUrls] = useState<string[]>([]);
   const [status, setStatus] = useState(
-    "Upload a sprite sheet, dial in the slice grid, then refine any frame that is drifting.",
+    "Upload a sprite sheet, split it into regions, then move and resize each frame independently.",
   );
 
-  const frameCount = config.columns * config.rows;
-
-  useEffect(() => {
-    setAdjustments((current) => {
-      if (current.length === frameCount) return current;
-      return Array.from(
-        { length: frameCount },
-        (_, index) => current[index] ?? { ...EMPTY_ADJUSTMENT },
-      );
-    });
-    setSelectedFrame((current) =>
-      Math.min(current, Math.max(frameCount - 1, 0)),
-    );
-    setPlayhead((current) => Math.min(current, Math.max(frameCount - 1, 0)));
-  }, [frameCount]);
+  const frameCount = regions.length;
+  const selectedRegion = regions[selectedFrame] ?? null;
+  const liveSelectedRegion =
+    dragState && dragState.frameIndex === selectedFrame
+      ? dragState.previewRegion
+      : selectedRegion;
+  const previewIndex = isPlaying ? playhead : selectedFrame;
 
   useEffect(() => {
     if (!isPlaying || frameCount < 2) {
-      setPlayhead(selectedFrame);
       return;
     }
 
@@ -305,50 +389,57 @@ function App() {
     }, 1000 / fps);
 
     return () => window.clearInterval(interval);
-  }, [fps, frameCount, isPlaying, selectedFrame]);
+  }, [fps, frameCount, isPlaying]);
 
   useEffect(() => {
     if (!dragState || !sourceImage) return;
 
     const activeDrag = dragState;
     const activeImage = sourceImage;
+    let dragFrame: number | null = null;
+    let latestPreviewRegion: Region | null = activeDrag.previewRegion;
 
     function handlePointerMove(event: PointerEvent) {
-      const rect = sourceStageRef.current?.getBoundingClientRect();
-      if (!rect || rect.width === 0 || rect.height === 0) return;
+      if (activeDrag.stageWidth === 0 || activeDrag.stageHeight === 0) return;
 
       const deltaX = Math.round(
-        (event.clientX - activeDrag.startX) * (activeImage.width / rect.width),
+        (event.clientX - activeDrag.startX) * (activeImage.width / activeDrag.stageWidth),
       );
       const deltaY = Math.round(
-        (event.clientY - activeDrag.startY) *
-          (activeImage.height / rect.height),
+        (event.clientY - activeDrag.startY) * (activeImage.height / activeDrag.stageHeight),
       );
 
-      setAdjustments((current) =>
-        current.map((adjustment, index) => {
-          if (index !== selectedFrame) return adjustment;
-
-          const next = getSquareResize(activeDrag.mode, deltaX, deltaY, {
-            dx: activeDrag.startDx,
-            dy: activeDrag.startDy,
-            dw: activeDrag.startDw,
-            dh: activeDrag.startDh,
-          });
-
-          const minTrim = 1 - Math.min(config.frameWidth, config.frameHeight);
-
-          return {
-            dx: next.dx,
-            dy: next.dy,
-            dw: Math.max(minTrim, next.dw),
-            dh: Math.max(minTrim, next.dh),
-          };
-        }),
+      const nextRegion = clampRegion(
+        getDraggedRegion(activeDrag.mode, deltaX, deltaY, activeDrag.startRegion),
+        activeImage,
       );
+
+      latestPreviewRegion = nextRegion;
+      if (dragFrame !== null) return;
+
+      dragFrame = window.requestAnimationFrame(() => {
+        dragFrame = null;
+        const previewRegion = latestPreviewRegion;
+        if (!previewRegion) return;
+        setDragState((current) =>
+          current
+            ? {
+                ...current,
+                previewRegion,
+              }
+            : current,
+        );
+      });
     }
 
     function handlePointerUp() {
+      const finalRegion = latestPreviewRegion ?? activeDrag.previewRegion;
+      setRegions((current) =>
+        current.map((region, index) =>
+          index === activeDrag.frameIndex ? finalRegion : region,
+        ),
+      );
+      latestPreviewRegion = null;
       setDragState(null);
     }
 
@@ -358,68 +449,63 @@ function App() {
     return () => {
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
+      if (dragFrame !== null) {
+        window.cancelAnimationFrame(dragFrame);
+        dragFrame = null;
+      }
     };
-  }, [
-    config.frameHeight,
-    config.frameWidth,
-    dragState,
-    selectedFrame,
-    sourceImage,
-  ]);
-
-  const frames = useMemo(() => {
-    if (!sourceImage) return [];
-
-    return Array.from({ length: frameCount }, (_, index) => {
-      const column = index % config.columns;
-      const row = Math.floor(index / config.columns);
-      const adjustment = adjustments[index] ?? EMPTY_ADJUSTMENT;
-      const baseX = config.offsetX + column * (config.frameWidth + config.gapX);
-      const baseY = config.offsetY + row * (config.frameHeight + config.gapY);
-      const sx = clamp(baseX + adjustment.dx, 0, sourceImage.width - 1);
-      const sy = clamp(baseY + adjustment.dy, 0, sourceImage.height - 1);
-      const sw = clamp(
-        config.frameWidth + adjustment.dw,
-        1,
-        sourceImage.width - sx,
-      );
-      const sh = clamp(
-        config.frameHeight + adjustment.dh,
-        1,
-        sourceImage.height - sy,
-      );
-
-      return { index, column, row, sx, sy, sw, sh };
-    });
-  }, [adjustments, config, frameCount, sourceImage]);
-
-  const currentFrame = frames[selectedFrame] ?? null;
-  const previewFrame = frames[isPlaying ? playhead : selectedFrame] ?? null;
+  }, [dragState, sourceImage]);
 
   useEffect(() => {
-    if (!sourceImage || frames.length === 0) {
-      setFrameImageUrls([]);
-      return;
+    if (!sourceImage || regions.length === 0) {
+      const frame = window.requestAnimationFrame(() => setFrameImageUrls([]));
+      return () => window.cancelAnimationFrame(frame);
     }
 
+    let ignore = false;
     const image = new Image();
     image.onload = () => {
-      setFrameImageUrls(frames.map((frame) => getFrameImageUrl(image, frame)));
+      if (ignore) return;
+      setFrameImageUrls(
+        regions.map((region) =>
+          getFrameImageUrl(
+            image,
+            region,
+            exportConfig.frameWidth,
+            exportConfig.frameHeight,
+          ),
+        ),
+      );
     };
     image.src = sourceImage.src;
-  }, [frames, sourceImage]);
 
-  function updateConfig<Key extends keyof SliceConfig>(
-    key: Key,
-    value: number,
-  ) {
-    setConfig((current) => ({
+    return () => {
+      ignore = true;
+    };
+  }, [exportConfig.frameHeight, exportConfig.frameWidth, regions, sourceImage]);
+
+  const displayRegions = useMemo(() => {
+    if (!dragState) return regions;
+    return regions.map((region, index) =>
+      index === dragState.frameIndex ? dragState.previewRegion : region,
+    );
+  }, [dragState, regions]);
+
+  const sourceBoxData = useMemo(() => {
+    if (!sourceImage) return [];
+    return displayRegions.map((region) => ({
+      left: `${(region.x / sourceImage.width) * 100}%`,
+      top: `${(region.y / sourceImage.height) * 100}%`,
+      width: `${(region.width / sourceImage.width) * 100}%`,
+      height: `${(region.height / sourceImage.height) * 100}%`,
+    }));
+  }, [displayRegions, sourceImage]);
+
+  function updateSplitConfig<Key extends keyof SplitConfig>(key: Key, value: number) {
+    setSplitConfig((current) => ({
       ...current,
       [key]: Math.max(
-        key === "offsetX" ||
-          key === "offsetY" ||
-          key === "gapX" ||
-          key === "gapY"
+        key === "offsetX" || key === "offsetY" || key === "gapX" || key === "gapY"
           ? -9999
           : 1,
         value,
@@ -427,51 +513,132 @@ function App() {
     }));
   }
 
-  function updateAdjustment<Key extends keyof FrameAdjustment>(
-    key: Key,
-    value: number,
-  ) {
-    setAdjustments((current) =>
-      current.map((adjustment, index) =>
-        index === selectedFrame ? { ...adjustment, [key]: value } : adjustment,
+  function updateExportConfig<Key extends keyof ExportConfig>(key: Key, value: ExportConfig[Key]) {
+    setExportConfig((current) => ({ ...current, [key]: value }));
+  }
+
+  function applyExportPreset(preset: ExportPreset) {
+    const size = presetToSize(preset);
+    if (!size) {
+      setExportConfig((current) => ({ ...current, preset }));
+      return;
+    }
+
+    setExportConfig((current) => ({
+      ...current,
+      preset,
+      frameWidth: size.width,
+      frameHeight: size.height,
+    }));
+    setStatus(`Applied ${size.width}x${size.height} export cells for a SNES-style sprite sheet.`);
+  }
+
+  function updateSelectedRegion<Key extends keyof Region>(key: Key, value: number) {
+    if (!sourceImage) return;
+    setRegions((current) =>
+      current.map((region, index) =>
+        index === selectedFrame
+          ? clampRegion({ ...region, [key]: value }, sourceImage)
+          : region,
       ),
     );
   }
 
-  function resetSelectedAdjustment() {
-    setAdjustments((current) =>
-      current.map((adjustment, index) =>
-        index === selectedFrame ? { ...EMPTY_ADJUSTMENT } : adjustment,
-      ),
+  function nudgeSelectedRegion(deltaX: number, deltaY: number, resize = false) {
+    if (!sourceImage || !selectedRegion) return;
+
+    setRegions((current) =>
+      current.map((region, index) => {
+        if (index !== selectedFrame) return region;
+        return clampRegion(
+          resize
+            ? {
+                ...region,
+                width: region.width + deltaX,
+                height: region.height + deltaY,
+              }
+            : {
+                ...region,
+                x: region.x + deltaX,
+                y: region.y + deltaY,
+              },
+          sourceImage,
+        );
+      }),
     );
-    setStatus("Reset the crop offsets for the selected frame.");
+    setStatus(
+      resize
+        ? "Resized the selected crop box with the keyboard."
+        : "Moved the selected crop box with the keyboard.",
+    );
   }
 
-  function startResizeDrag(
-    mode: ResizeMode,
-    event: React.PointerEvent<HTMLSpanElement>,
-  ) {
+  function handleRegionKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (index !== selectedFrame) return;
+
+    const step = event.shiftKey ? 8 : 1;
+    const resize = event.altKey;
+    const keyDelta: Partial<Record<string, [number, number]>> = {
+      ArrowLeft: resize ? [-step, 0] : [-step, 0],
+      ArrowRight: resize ? [step, 0] : [step, 0],
+      ArrowUp: resize ? [0, -step] : [0, -step],
+      ArrowDown: resize ? [0, step] : [0, step],
+    };
+    const delta = keyDelta[event.key];
+    if (!delta) return;
+
+    event.preventDefault();
+    nudgeSelectedRegion(delta[0], delta[1], resize);
+  }
+
+  function splitFrames() {
+    const nextRegions = splitRegionsFromGrid(splitConfig);
+    setRegions(nextRegions);
+    setSelectedFrame(0);
+    setPlayhead(0);
+    setExportConfig((current) => ({
+      ...current,
+      columns: splitConfig.columns,
+      rows: splitConfig.rows,
+    }));
+    setStatus("Generated independent crop regions from the current split grid.");
+  }
+
+  function autoSplitFromImage() {
+    if (!sourceImage) return;
+    const nextSplit = guessSplitConfig(sourceImage.width, sourceImage.height);
+    setSplitConfig(nextSplit);
+    setRegions(splitRegionsFromGrid(nextSplit));
+    const nextExport = guessExportPreset(nextSplit.frameWidth, nextSplit.frameHeight);
+    setExportConfig({ ...nextExport, columns: nextSplit.columns, rows: nextSplit.rows });
+    setSelectedFrame(0);
+    setPlayhead(0);
+    setStatus("Rebuilt the regions from the uploaded sheet and applied an SNES-style export preset.");
+  }
+
+  function startDrag(mode: ResizeMode, event: React.PointerEvent<HTMLElement>) {
+    if (!selectedRegion) return;
     event.preventDefault();
     event.stopPropagation();
+    const stage = (event.target as Element | null)?.closest("[data-stage='source']");
+    const rect = stage?.getBoundingClientRect();
+    if (!rect) return;
 
-    const adjustment = adjustments[selectedFrame] ?? EMPTY_ADJUSTMENT;
     setDragState({
       mode,
       startX: event.clientX,
       startY: event.clientY,
-      startDx: adjustment.dx,
-      startDy: adjustment.dy,
-      startDw: adjustment.dw,
-      startDh: adjustment.dh,
+      stageWidth: rect.width,
+      stageHeight: rect.height,
+      startRegion: selectedRegion,
+      previewRegion: selectedRegion,
+      frameIndex: selectedFrame,
     });
-    setStatus("Drag any edge or corner to resize the crop freely.");
-  }
 
-  function applyUniformFrameSize() {
-    if (!sourceImage) return;
-    setConfig(guessConfig(sourceImage.width, sourceImage.height));
     setStatus(
-      "Re-ran the automatic grid guess from the source sheet dimensions.",
+      mode === "move"
+        ? "Drag the selected region to reposition the crop box."
+        : "Drag any edge or corner to resize the selected region freely.",
     );
   }
 
@@ -486,22 +653,23 @@ function App() {
 
       const image = new Image();
       image.onload = () => {
-        setSourceImage({
+        const loaded = {
           name: file.name.replace(/\.[^.]+$/, ""),
           src: result,
           width: image.naturalWidth,
           height: image.naturalHeight,
-        });
-        const nextConfig = guessConfig(image.naturalWidth, image.naturalHeight);
-        setConfig(nextConfig);
-        setAdjustments(
-          createAdjustmentArray(nextConfig.columns * nextConfig.rows),
-        );
+        };
+
+        const nextSplit = guessSplitConfig(image.naturalWidth, image.naturalHeight);
+        const nextExport = guessExportPreset(nextSplit.frameWidth, nextSplit.frameHeight);
+
+        setSourceImage(loaded);
+        setSplitConfig(nextSplit);
+        setRegions(splitRegionsFromGrid(nextSplit));
+        setExportConfig({ ...nextExport, columns: nextSplit.columns, rows: nextSplit.rows });
         setSelectedFrame(0);
         setPlayhead(0);
-        setStatus(
-          `Loaded ${file.name}. Adjust the grid until every frame box hugs the sprite cleanly.`,
-        );
+        setStatus(`Loaded ${file.name}. Split the sheet, then move and resize each region independently.`);
       };
       image.src = result;
     };
@@ -509,190 +677,182 @@ function App() {
   }
 
   async function exportSpriteSheet() {
-    if (!sourceImage || frames.length === 0) return;
+    if (!sourceImage || regions.length === 0) return;
 
+    const capacity = exportConfig.columns * exportConfig.rows;
     const canvas = createCanvas(
-      config.frameWidth * frames.length,
-      config.frameHeight,
+      exportConfig.columns * exportConfig.frameWidth,
+      exportConfig.rows * exportConfig.frameHeight,
     );
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     ctx.imageSmoothingEnabled = false;
-    const image = new Image();
-    image.src = sourceImage.src;
+    const image = await loadHtmlImage(sourceImage.src);
 
-    await new Promise<void>((resolve) => {
-      if (image.complete) {
-        resolve();
-        return;
-      }
-      image.onload = () => resolve();
-    });
-
-    frames.forEach((frame, index) => {
-      ctx.clearRect(
-        index * config.frameWidth,
-        0,
-        config.frameWidth,
-        config.frameHeight,
-      );
-      ctx.drawImage(
+    regions.slice(0, capacity).forEach((region, index) => {
+      const column = index % exportConfig.columns;
+      const row = Math.floor(index / exportConfig.columns);
+      drawRegionToCanvas(
+        ctx,
         image,
-        frame.sx,
-        frame.sy,
-        frame.sw,
-        frame.sh,
-        index * config.frameWidth,
-        0,
-        config.frameWidth,
-        config.frameHeight,
+        region,
+        exportConfig.frameWidth,
+        exportConfig.frameHeight,
+        column * exportConfig.frameWidth,
+        row * exportConfig.frameHeight,
       );
     });
 
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
-    );
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return;
 
-    downloadBlob(blob, `${sourceImage.name || "sprite"}-sliced-sheet.png`);
-    setStatus("Exported a rebuilt sprite sheet using the current crop boxes.");
+    downloadBlob(blob, `${sourceImage.name || "sprite"}-sheet-${exportConfig.columns}x${exportConfig.rows}.png`);
+    setStatus("Exported a packed sprite sheet using the current output grid and frame size.");
   }
 
   async function exportSelectedFrame() {
-    if (!sourceImage || !currentFrame) return;
+    if (!sourceImage || !selectedRegion) return;
 
-    const canvas = createCanvas(config.frameWidth, config.frameHeight);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.imageSmoothingEnabled = false;
-    const image = new Image();
-    image.src = sourceImage.src;
-
-    await new Promise<void>((resolve) => {
-      if (image.complete) {
-        resolve();
-        return;
-      }
-      image.onload = () => resolve();
-    });
-
-    ctx.drawImage(
+    const image = await loadHtmlImage(sourceImage.src);
+    const rendered = renderRegionCanvas(
       image,
-      currentFrame.sx,
-      currentFrame.sy,
-      currentFrame.sw,
-      currentFrame.sh,
-      0,
-      0,
-      config.frameWidth,
-      config.frameHeight,
+      selectedRegion,
+      exportConfig.frameWidth,
+      exportConfig.frameHeight,
     );
+    if (!rendered) return;
 
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, "image/png"),
-    );
+    const { canvas } = rendered;
+
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return;
 
-    downloadBlob(
-      blob,
-      `${sourceImage.name || "sprite"}-frame-${selectedFrame + 1}.png`,
-    );
-    setStatus("Exported the selected frame as a cleaned standalone sprite.");
+    downloadBlob(blob, `${sourceImage.name || "sprite"}-frame-${selectedFrame + 1}.png`);
+    setStatus("Exported the selected frame into the current output cell size.");
+  }
+
+  async function exportGif() {
+    if (!sourceImage || regions.length === 0) return;
+
+    const image = await loadHtmlImage(sourceImage.src);
+    const gif = GIFEncoder();
+    const delay = Math.max(20, Math.round(1000 / Math.max(fps, 1)));
+
+    regions.forEach((region) => {
+      const rendered = renderRegionCanvas(
+        image,
+        region,
+        exportConfig.frameWidth,
+        exportConfig.frameHeight,
+      );
+      if (!rendered) return;
+
+      const { ctx } = rendered;
+      const rgba = ctx.getImageData(0, 0, exportConfig.frameWidth, exportConfig.frameHeight).data;
+      const palette = quantize(rgba, 256, { format: "rgba4444", oneBitAlpha: true }) as number[][];
+      const index = applyPalette(rgba, palette, "rgba4444");
+      const transparentIndex = getTransparentPaletteIndex(palette);
+
+      gif.writeFrame(index, exportConfig.frameWidth, exportConfig.frameHeight, {
+        palette,
+        delay,
+        repeat: 0,
+        transparent: true,
+        transparentIndex,
+      });
+    });
+
+    gif.finish();
+
+    const bytes = gif.bytes();
+    const buffer = bytes.buffer.slice(
+      bytes.byteOffset,
+      bytes.byteOffset + bytes.byteLength,
+    ) as ArrayBuffer;
+    const blob = new Blob([buffer], { type: "image/gif" });
+    downloadBlob(blob, `${sourceImage.name || "sprite"}.gif`);
+    setStatus("Exported an animated GIF using the current frame order, FPS, and output cell size.");
   }
 
   function exportMetadata() {
-    if (!sourceImage || frames.length === 0) return;
+    if (!sourceImage || regions.length === 0) return;
 
     const metadata = {
       source: sourceImage.name,
       frameRate: fps,
-      outputFrame: { width: config.frameWidth, height: config.frameHeight },
-      grid: config,
-      frames: frames.map((frame) => ({
-        index: frame.index,
-        crop: { x: frame.sx, y: frame.sy, width: frame.sw, height: frame.sh },
+      split: splitConfig,
+      export: exportConfig,
+      frames: regions.map((region, index) => ({
+        index,
+        x: region.x,
+        y: region.y,
+        width: region.width,
+        height: region.height,
       })),
     };
 
     downloadBlob(
-      new Blob([JSON.stringify(metadata, null, 2)], {
-        type: "application/json",
-      }),
-      `${sourceImage.name || "sprite"}-slice-data.json`,
+      new Blob([JSON.stringify(metadata, null, 2)], { type: "application/json" }),
+      `${sourceImage.name || "sprite"}-regions.json`,
     );
-    setStatus("Exported crop metadata for the current slice setup.");
+    setStatus("Exported region coordinates and output sheet settings.");
   }
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top,color-mix(in_oklch,var(--color-app-accent)_10%,transparent),transparent_40%),var(--color-app-bg)] px-3 py-4 text-app-text md:px-4 md:py-6">
-      <div className="mx-auto grid w-full max-w-360 gap-4">
-        <header className="flex gap-6 border border-app-border bg-app-surface p-6 shadow-panel  lg:items-end grid-cols-2">
-          <h1 className="font-display text-4xl leading-[0.98] tracking-[-0.04em] text-app-text sm:text-5xl lg:text-[3.8rem] flex">
-            Cut messy generated sprite sheets into clean, previewable animation
-            frames.
-          </h1>
-          <div className="grid gap-3 justify-end max-w-sm">
+    <div className="app-backdrop min-h-screen px-3 py-4 text-app-text md:px-4 md:py-6">
+      <div className="mx-auto grid w-full max-w-[1440px] gap-4">
+        <header className="hero-shell grid gap-5 border border-app-border bg-app-surface p-4 shadow-panel sm:p-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(18rem,0.8fr)] lg:items-end">
+          <div>
+            <p className={eyebrowClass}>Sprite Slicer</p>
+            <h1 className="max-w-[15ch] font-display text-[2.25rem] leading-[0.98] tracking-[-0.04em] text-app-text sm:text-4xl lg:text-[3.8rem]">
+              Split, edit, and pack sprite regions into game-ready sheets.
+            </h1>
+          </div>
+          <div className="grid max-w-[34ch] gap-3">
             <p className="m-0 max-w-[65ch] text-app-muted">
-              Upload an image that already contains the sprite, place the
-              slicing grid, fix the bad cuts frame by frame, and export a
-              rebuilt sheet.
+              Build independent crop regions from a sheet, edit each region like a real frame box, then export packed layouts such as 4x4 using SNES-friendly cell sizes.
             </p>
-            <label
-              className={`${primaryButtonClass} relative inline-flex cursor-pointer items-center justify-center`}
-            >
+            <label className={`${primaryButtonClass} relative inline-flex cursor-pointer items-center justify-center`}>
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp,image/gif"
                 onChange={handleFileUpload}
                 className="absolute inset-0 cursor-pointer opacity-0"
+                aria-label={sourceImage ? "Replace source sprite sheet" : "Upload source sprite sheet"}
               />
-              <span>
-                {sourceImage ? "Replace source sheet" : "Upload sprite sheet"}
-              </span>
+              <span>{sourceImage ? "Replace source sheet" : "Upload sprite sheet"}</span>
             </label>
           </div>
         </header>
 
-        <main className="grid gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)_minmax(17rem,22rem)]">
-          <section className={panelClass}>
+        <main className="workspace-grid grid gap-4 xl:grid-cols-[minmax(16rem,19rem)_minmax(32rem,1.85fr)_minmax(17rem,20rem)]">
+          <section className={panelClass} aria-labelledby="split-setup-heading">
             <div className="grid gap-1">
-              <p className={eyebrowClass}>Grid</p>
-              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
-                Slice setup
-              </h2>
+              <p className={eyebrowClass}>Split Setup</p>
+              <h2 id="split-setup-heading" className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">Source base</h2>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
+            <div className="control-grid grid sm:grid-cols-2 xl:grid-cols-2">
               {[
-                ["Columns", config.columns, "columns"],
-                ["Rows", config.rows, "rows"],
-                ["Frame width", config.frameWidth, "frameWidth"],
-                ["Frame height", config.frameHeight, "frameHeight"],
-                ["Offset X", config.offsetX, "offsetX"],
-                ["Offset Y", config.offsetY, "offsetY"],
-                ["Gap X", config.gapX, "gapX"],
-                ["Gap Y", config.gapY, "gapY"],
+                ["Columns", splitConfig.columns, "columns"],
+                ["Rows", splitConfig.rows, "rows"],
+                ["Frame width", splitConfig.frameWidth, "frameWidth"],
+                ["Frame height", splitConfig.frameHeight, "frameHeight"],
+                ["Offset X", splitConfig.offsetX, "offsetX"],
+                ["Offset Y", splitConfig.offsetY, "offsetY"],
+                ["Gap X", splitConfig.gapX, "gapX"],
+                ["Gap Y", splitConfig.gapY, "gapY"],
               ].map(([label, value, key]) => (
                 <label key={String(key)} className={fieldClass}>
                   <span className="text-[0.92rem] text-app-muted">{label}</span>
                   <input
                     type="number"
-                    min={
-                      key === "columns" ||
-                      key === "rows" ||
-                      key === "frameWidth" ||
-                      key === "frameHeight"
-                        ? "1"
-                        : undefined
-                    }
+                    aria-label={`Split ${String(label).toLowerCase()}`}
+                    min={key === "columns" || key === "rows" || key === "frameWidth" || key === "frameHeight" ? "1" : undefined}
                     value={value}
                     onChange={(event) =>
-                      updateConfig(
-                        key as keyof SliceConfig,
-                        Number(event.target.value),
-                      )
+                      updateSplitConfig(key as keyof SplitConfig, Number(event.target.value))
                     }
                     className={inputClass}
                   />
@@ -700,134 +860,113 @@ function App() {
               ))}
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={secondaryButtonClass}
-                onClick={applyUniformFrameSize}
-                disabled={!sourceImage}
-              >
-                Auto-guess grid
+            <div className="control-actions grid gap-2 sm:grid-cols-2">
+              <button type="button" className={secondaryButtonClass} onClick={autoSplitFromImage} disabled={!sourceImage} aria-describedby="status-message">
+                Re-auto split
+              </button>
+              <button type="button" className={primaryButtonClass} onClick={splitFrames} disabled={!sourceImage} aria-describedby="status-message">
+                Split frames
               </button>
             </div>
 
             <div className="grid gap-1">
-              <p className={eyebrowClass}>Per Frame</p>
-              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
-                Crop correction
-              </h2>
+              <p className={eyebrowClass}>Selected Region</p>
+              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">Frame box</h2>
             </div>
 
             <p className="m-0 max-w-[65ch] text-app-muted">
-              Use these values to nudge the selected frame when one crop box is
-              misaligned.
+              Each frame has its own left, top, width, and height. After splitting, every box can move and resize independently.
             </p>
 
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
+            <div className="control-grid grid sm:grid-cols-2 xl:grid-cols-2">
               {[
-                ["Shift X", adjustments[selectedFrame]?.dx ?? 0, "dx"],
-                ["Shift Y", adjustments[selectedFrame]?.dy ?? 0, "dy"],
-                ["Width trim", adjustments[selectedFrame]?.dw ?? 0, "dw"],
-                ["Height trim", adjustments[selectedFrame]?.dh ?? 0, "dh"],
+                ["Left", selectedRegion?.x ?? 0, "x"],
+                ["Top", selectedRegion?.y ?? 0, "y"],
+                ["Width", selectedRegion?.width ?? 0, "width"],
+                ["Height", selectedRegion?.height ?? 0, "height"],
               ].map(([label, value, key]) => (
                 <label key={String(key)} className={fieldClass}>
                   <span className="text-[0.92rem] text-app-muted">{label}</span>
                   <input
                     type="number"
+                    aria-label={`Selected frame ${String(label).toLowerCase()}`}
+                    min={key === "width" || key === "height" ? "1" : undefined}
                     value={value}
-                    onChange={(event) =>
-                      updateAdjustment(
-                        key as keyof FrameAdjustment,
-                        Number(event.target.value),
-                      )
-                    }
+                    onChange={(event) => updateSelectedRegion(key as keyof Region, Number(event.target.value))}
                     className={inputClass}
+                    disabled={!sourceImage || !selectedRegion}
                   />
                 </label>
               ))}
             </div>
-
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={secondaryButtonClass}
-                onClick={resetSelectedAdjustment}
-                disabled={!sourceImage}
-              >
-                Reset selected frame
-              </button>
-            </div>
           </section>
 
-          <section className={panelClass}>
-            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+          <section className={`${panelClass} editor-panel`} aria-labelledby="editor-heading">
+            <div className="editor-toolbar grid gap-3">
               <div>
-                <p className={eyebrowClass}>Source</p>
-                <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
-                  {sourceImage
-                    ? `${sourceImage.width} x ${sourceImage.height}`
-                    : "Upload an image to start slicing"}
+                <p className={eyebrowClass}>Editor</p>
+                <h2 id="editor-heading" className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                  {liveSelectedRegion
+                    ? `Frame ${selectedFrame + 1} crop box`
+                    : "Upload an image to start"}
                 </h2>
               </div>
-              <p className="m-0 max-w-[65ch] text-app-muted">
-                Every overlay box represents one extracted frame.
-              </p>
+              {liveSelectedRegion ? (
+                <dl className="region-readout grid grid-cols-2 gap-2 sm:grid-cols-4" aria-label={getRegionSummary(liveSelectedRegion)}>
+                  {[
+                    ["Left", liveSelectedRegion.x],
+                    ["Top", liveSelectedRegion.y],
+                    ["Width", liveSelectedRegion.width],
+                    ["Height", liveSelectedRegion.height],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="region-stat">
+                      <dt>{label}</dt>
+                      <dd>{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              ) : null}
+              <p className="m-0 max-w-[72ch] text-app-muted">Select a frame, drag inside to move, drag edges or corners to resize. Keyboard: arrows move, Alt+arrows resize, Shift increases the step.</p>
             </div>
 
             {sourceImage ? (
-              <div
-                ref={sourceStageRef}
-                className="relative border border-app-border bg-app-raised"
-              >
-                <img
-                  src={sourceImage.src}
-                  alt="Uploaded sprite sheet"
-                  className="block h-auto w-full"
-                />
+              <div data-stage="source" className="stage-shell relative overflow-hidden border border-app-border bg-app-raised" aria-label="Source sprite sheet region editor">
+                <img src={sourceImage.src} alt="Uploaded sprite sheet" className="block h-auto w-full" />
                 <div className="absolute inset-0">
-                  {frames.map((frame) => (
+                {displayRegions.map((region, index) => (
                     <button
-                      key={`overlay-${frame.index}`}
+                      key={`overlay-${index}`}
                       type="button"
-                      className={`absolute m-0 overflow-visible border p-0 text-left shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_12%,transparent)] ${
-                        frame.index === selectedFrame
-                          ? "border-app-accent bg-[color-mix(in_oklch,var(--color-app-accent)_16%,var(--color-app-raised))]"
-                          : "border-app-border bg-[color-mix(in_oklch,var(--color-app-accent)_12%,transparent)]"
+                      className={`region-box absolute m-0 touch-none overflow-visible p-0 text-left ${
+                        index === selectedFrame
+                          ? "region-box-active"
+                          : "region-box-idle"
                       }`}
-                      style={{
-                        left: `${(frame.sx / sourceImage.width) * 100}%`,
-                        top: `${(frame.sy / sourceImage.height) * 100}%`,
-                        width: `${(frame.sw / sourceImage.width) * 100}%`,
-                        height: `${(frame.sh / sourceImage.height) * 100}%`,
-                      }}
+                      style={sourceBoxData[index]}
+                      aria-label={`Frame ${index + 1} crop region, ${getRegionSummary(region)}`}
+                      aria-pressed={index === selectedFrame}
+                      aria-describedby="editor-heading"
                       onClick={() => {
-                        setSelectedFrame(frame.index);
-                        setPlayhead(frame.index);
+                        setSelectedFrame(index);
+                        setPlayhead(index);
                         setIsPlaying(false);
+                      }}
+                      onKeyDown={(event) => handleRegionKeyDown(event, index)}
+                      onPointerDown={(event) => {
+                        if (index !== selectedFrame) return;
+                        startDrag("move", event);
                       }}
                     >
                       <span className="pointer-events-none absolute left-[0.35rem] top-[0.3rem] text-[0.72rem] text-app-text">
-                        {frame.index + 1}
+                        #{index + 1}
                       </span>
-                      {frame.index === selectedFrame
-                        ? (
-                            [
-                              "left",
-                              "right",
-                              "top",
-                              "bottom",
-                              "top-left",
-                              "top-right",
-                              "bottom-left",
-                              "bottom-right",
-                            ] as ResizeMode[]
-                          ).map((mode) => (
+                      {index === selectedFrame
+                        ? (["left", "right", "top", "bottom", "top-left", "top-right", "bottom-left", "bottom-right"] as ResizeMode[]).map((mode) => (
                             <span
                               key={mode}
                               className={getHandleClass(mode)}
-                              onPointerDown={(event) =>
-                                startResizeDrag(mode, event)
-                              }
+                              aria-hidden="true"
+                              onPointerDown={(event) => startDrag(mode, event)}
                             />
                           ))
                         : null}
@@ -836,50 +975,42 @@ function App() {
                 </div>
               </div>
             ) : (
-              <div className="grid min-h-80 place-items-center border border-app-border bg-app-raised">
+              <div className="grid min-h-80 place-items-center border border-app-border bg-app-raised p-5">
                 <p className="m-0 max-w-[65ch] text-app-muted">
-                  Upload a generated sprite sheet and the slicing controls will
-                  appear here.
+                  Upload a generated sprite sheet and the editor will show independent crop regions here.
                 </p>
               </div>
             )}
 
             <div className="grid gap-3">
-              <div className="flex items-end justify-between gap-3">
-                <div>
-                  <p className={eyebrowClass}>Frames</p>
-                  <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
-                    {frameCount} slices
-                  </h2>
-                </div>
+              <div>
+                <p className={eyebrowClass}>Frames</p>
+                <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">{frameCount} regions</h2>
               </div>
 
-              <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))]">
-                {frames.map((frame) => (
+              <div className="frame-strip grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(6.25rem,1fr))]" role="listbox" aria-label="Sprite frames">
+                {regions.map((region, index) => (
                   <button
-                    key={`frame-${frame.index}`}
+                    key={`frame-${index}`}
                     type="button"
-                    className={`grid gap-2 border p-2 text-left transition enabled:hover:-translate-y-px ${
-                      frame.index === selectedFrame
-                        ? "border-app-accent bg-[color-mix(in_oklch,var(--color-app-accent)_16%,var(--color-app-raised))]"
+                    className={`frame-card grid min-h-28 gap-2 border p-2 text-left transition enabled:hover:-translate-y-px ${
+                      index === selectedFrame
+                        ? "frame-card-active border-app-accent"
                         : "border-app-border bg-app-raised"
                     }`}
+                    role="option"
+                    aria-selected={index === selectedFrame}
+                    aria-label={`Select frame ${index + 1}, ${getRegionSummary(region)}`}
                     onClick={() => {
-                      setSelectedFrame(frame.index);
-                      setPlayhead(frame.index);
+                      setSelectedFrame(index);
+                      setPlayhead(index);
                       setIsPlaying(false);
                     }}
                   >
-                    <span className={eyebrowClass}>
-                      {String(frame.index + 1).padStart(2, "0")}
-                    </span>
-                    <span className="block aspect-square overflow-hidden bg-[color-mix(in_oklch,var(--color-app-surface)_88%,var(--color-app-ink)_12%)]">
-                      {frameImageUrls[frame.index] ? (
-                        <img
-                          src={frameImageUrls[frame.index]}
-                          alt=""
-                          className="h-full w-full object-contain [image-rendering:pixelated]"
-                        />
+                    <span className={eyebrowClass}>{String(index + 1).padStart(2, "0")}</span>
+                    <span className="frame-well block aspect-square overflow-hidden">
+                      {frameImageUrls[index] ? (
+                        <img src={frameImageUrls[index]} alt="" className="h-full w-full object-contain [image-rendering:pixelated]" />
                       ) : (
                         <span className="block h-full w-full" />
                       )}
@@ -890,45 +1021,34 @@ function App() {
             </div>
           </section>
 
-          <section className={panelClass}>
+          <section className={panelClass} aria-labelledby="preview-heading">
             <div className="grid gap-1">
               <p className={eyebrowClass}>Preview</p>
-              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
-                Animation check
-              </h2>
+              <h2 id="preview-heading" className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">Game-ready export</h2>
             </div>
 
-            <div className="grid min-h-80 place-items-center border border-app-border bg-app-raised p-4">
-              {sourceImage && previewFrame ? (
+            <div className="preview-shell grid min-h-80 place-items-center border border-app-border bg-app-raised p-4">
+              {sourceImage && frameImageUrls[previewIndex] ? (
                 <span
-                  className="block w-full max-w-[18rem] overflow-hidden bg-[color-mix(in_oklch,var(--color-app-surface)_88%,var(--color-app-ink)_12%)]"
-                  style={{
-                    aspectRatio: `${config.frameWidth} / ${config.frameHeight}`,
-                  }}
+                  className="frame-well block w-full max-w-[18rem] overflow-hidden"
+                  style={{ aspectRatio: `${exportConfig.frameWidth} / ${exportConfig.frameHeight}` }}
                 >
-                  {frameImageUrls[previewFrame.index] ? (
-                    <img
-                      src={frameImageUrls[previewFrame.index]}
-                      alt=""
-                      className="h-full w-full object-contain [image-rendering:pixelated]"
-                    />
-                  ) : (
-                    <span className="block h-full w-full" />
-                  )}
+                  <img
+                    src={frameImageUrls[previewIndex]}
+                    alt=""
+                    className="h-full w-full object-contain [image-rendering:pixelated]"
+                  />
                 </span>
               ) : (
-                <p className="m-0 max-w-[65ch] text-app-muted">
-                  Playback preview appears after you upload a source sheet.
-                </p>
+                <p className="m-0 max-w-[65ch] text-app-muted">Preview appears after you upload and split a source sheet.</p>
               )}
             </div>
 
             <label className={fieldClass}>
-              <span className="text-[0.92rem] text-app-muted">
-                Preview speed: {fps} fps
-              </span>
+              <span className="text-[0.92rem] text-app-muted">Playback speed: {fps} fps</span>
               <input
                 type="range"
+                aria-label="Playback speed in frames per second"
                 min="1"
                 max="24"
                 value={fps}
@@ -937,13 +1057,82 @@ function App() {
               />
             </label>
 
+            <div className="grid gap-2 sm:grid-cols-2">
+              <label className={fieldClass}>
+                <span className="text-[0.92rem] text-app-muted">SNES preset</span>
+                <select
+                  value={exportConfig.preset}
+                  aria-label="SNES export preset"
+                  onChange={(event) => applyExportPreset(event.target.value as ExportPreset)}
+                  className={inputClass}
+                >
+                  <option value="snes-16">SNES 16x16</option>
+                  <option value="snes-32">SNES 32x32</option>
+                  <option value="snes-64">SNES 64x64</option>
+                  <option value="snes-16x32">SNES 16x32</option>
+                  <option value="snes-32x64">SNES 32x64</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <label className={fieldClass}>
+                <span className="text-[0.92rem] text-app-muted">Export grid</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="number"
+                    aria-label="Export grid columns"
+                    min="1"
+                    value={exportConfig.columns}
+                    onChange={(event) => updateExportConfig("columns", Math.max(1, Number(event.target.value)))}
+                    className={inputClass}
+                  />
+                  <input
+                    type="number"
+                    aria-label="Export grid rows"
+                    min="1"
+                    value={exportConfig.rows}
+                    onChange={(event) => updateExportConfig("rows", Math.max(1, Number(event.target.value)))}
+                    className={inputClass}
+                  />
+                </div>
+              </label>
+              <label className={fieldClass}>
+                <span className="text-[0.92rem] text-app-muted">Output width</span>
+                <input
+                  type="number"
+                  aria-label="Output frame width"
+                  min="1"
+                  value={exportConfig.frameWidth}
+                  onChange={(event) =>
+                    setExportConfig((current) => ({
+                      ...current,
+                      frameWidth: Math.max(1, Number(event.target.value)),
+                      preset: "custom",
+                    }))
+                  }
+                  className={inputClass}
+                />
+              </label>
+              <label className={fieldClass}>
+                <span className="text-[0.92rem] text-app-muted">Output height</span>
+                <input
+                  type="number"
+                  aria-label="Output frame height"
+                  min="1"
+                  value={exportConfig.frameHeight}
+                  onChange={(event) =>
+                    setExportConfig((current) => ({
+                      ...current,
+                      frameHeight: Math.max(1, Number(event.target.value)),
+                      preset: "custom",
+                    }))
+                  }
+                  className={inputClass}
+                />
+              </label>
+            </div>
+
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                className={primaryButtonClass}
-                onClick={() => setIsPlaying((current) => !current)}
-                disabled={!sourceImage}
-              >
+              <button type="button" className={primaryButtonClass} onClick={() => setIsPlaying((current) => !current)} disabled={!sourceImage} aria-pressed={isPlaying}>
                 {isPlaying ? "Pause preview" : "Play preview"}
               </button>
               <button
@@ -960,33 +1149,21 @@ function App() {
             </div>
 
             <div className="grid gap-2">
-              <button
-                type="button"
-                className={primaryButtonClass}
-                onClick={exportSpriteSheet}
-                disabled={!sourceImage}
-              >
-                Export new sprite sheet
+              <button type="button" className={primaryButtonClass} onClick={exportSpriteSheet} disabled={!sourceImage}>
+                Export packed sprite sheet
               </button>
-              <button
-                type="button"
-                className={secondaryButtonClass}
-                onClick={exportSelectedFrame}
-                disabled={!sourceImage}
-              >
+              <button type="button" className={primaryButtonClass} onClick={exportGif} disabled={!sourceImage}>
+                Export GIF
+              </button>
+              <button type="button" className={secondaryButtonClass} onClick={exportSelectedFrame} disabled={!sourceImage}>
                 Export selected frame
               </button>
-              <button
-                type="button"
-                className={secondaryButtonClass}
-                onClick={exportMetadata}
-                disabled={!sourceImage}
-              >
-                Export slice metadata
+              <button type="button" className={secondaryButtonClass} onClick={exportMetadata} disabled={!sourceImage}>
+                Export region metadata
               </button>
             </div>
 
-            <p className="m-0 max-w-[65ch] text-app-muted">{status}</p>
+            <p id="status-message" className="m-0 max-w-[65ch] text-app-muted" role="status" aria-live="polite">{status}</p>
           </section>
         </main>
       </div>
