@@ -1,75 +1,49 @@
-# React + TypeScript + Vite
+# Sprite Slicer
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Browser-based sprite sheet cleanup tool for AI-generated or uneven animation sheets.
 
-Currently, two official plugins are available:
+## What It Does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Upload an existing sprite sheet image
+- Slice it into frames using a configurable grid
+- Adjust each crop visually with draggable crop handles
+- Resize crops freely from any edge or corner
+- Preview the extracted frames as an animation
+- Export a rebuilt sprite sheet, a single frame, or slice metadata JSON
 
-## React Compiler
+## Stack
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+- React 19
+- TypeScript
+- Vite
+- Tailwind CSS 4
 
-Note: This will impact Vite dev & build performances.
+## Development
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm install
+pnpm dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Production Build
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pnpm build
+pnpm preview
 ```
+
+## Workflow
+
+1. Upload a sprite sheet.
+2. Set `columns`, `rows`, `frame width`, and `frame height`.
+3. Adjust `offset` and `gap` if the grid does not line up.
+4. Click any slice on the source image to edit that frame.
+5. Drag any edge or corner to tighten the crop.
+6. Use the preview panel to check animation timing.
+7. Export the rebuilt sheet or individual frames.
+
+## Exports
+
+- `*-sliced-sheet.png`: rebuilt horizontal sprite sheet
+- `*-frame-N.png`: selected cleaned frame
+- `*-slice-data.json`: crop metadata for all frames

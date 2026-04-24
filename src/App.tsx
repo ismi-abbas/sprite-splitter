@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import "./App.css";
 
 type SliceConfig = {
   columns: number;
@@ -46,6 +45,16 @@ type DragState = {
   startDh: number;
 };
 
+type ExtractedFrame = {
+  index: number;
+  column: number;
+  row: number;
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+};
+
 const DEFAULT_CONFIG: SliceConfig = {
   columns: 4,
   rows: 1,
@@ -63,6 +72,19 @@ const EMPTY_ADJUSTMENT: FrameAdjustment = {
   dw: 0,
   dh: 0,
 };
+
+const panelClass =
+  "grid gap-4 border border-app-border bg-app-surface p-4 shadow-panel md:p-6";
+const eyebrowClass =
+  "m-0 text-[0.72rem] uppercase tracking-[0.18em] text-app-muted";
+const fieldClass = "grid gap-2";
+const inputClass =
+  "min-h-11 border border-app-border/90 bg-app-raised px-3.5 py-3 text-app-text outline-none transition focus:border-app-accent focus:ring-2 focus:ring-app-accent/60";
+const secondaryButtonClass =
+  "min-h-11 border border-app-border bg-app-raised px-4 py-3 text-app-text transition enabled:hover:-translate-y-px enabled:hover:border-app-accent/70 disabled:cursor-not-allowed disabled:opacity-50";
+const primaryButtonClass =
+  "min-h-11 border border-app-accent-strong bg-app-accent-strong px-4 py-3 text-app-ink transition enabled:hover:-translate-y-px enabled:hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50";
+const handleBaseClass = "absolute z-10 block bg-app-accent-strong";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
@@ -115,10 +137,7 @@ function downloadBlob(blob: Blob, fileName: string) {
   URL.revokeObjectURL(url);
 }
 
-function getFrameImageUrl(
-  image: HTMLImageElement,
-  frame: { sx: number; sy: number; sw: number; sh: number },
-) {
+function getFrameImageUrl(image: HTMLImageElement, frame: ExtractedFrame) {
   const canvas = createCanvas(frame.sw, frame.sh);
   const ctx = canvas.getContext("2d");
   if (!ctx) return "";
@@ -218,6 +237,27 @@ function getSquareResize(
         dh: start.dh + sizeDelta,
       };
     }
+  }
+}
+
+function getHandleClass(mode: ResizeMode) {
+  switch (mode) {
+    case "left":
+      return `${handleBaseClass} -left-[3px] top-0 h-full w-[6px] cursor-ew-resize`;
+    case "right":
+      return `${handleBaseClass} -right-[3px] top-0 h-full w-[6px] cursor-ew-resize`;
+    case "top":
+      return `${handleBaseClass} -top-[3px] left-0 h-[6px] w-full cursor-ns-resize`;
+    case "bottom":
+      return `${handleBaseClass} -bottom-[3px] left-0 h-[6px] w-full cursor-ns-resize`;
+    case "top-left":
+      return `${handleBaseClass} -left-[5px] -top-[5px] h-3 w-3 cursor-nwse-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+    case "top-right":
+      return `${handleBaseClass} -right-[5px] -top-[5px] h-3 w-3 cursor-nesw-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+    case "bottom-left":
+      return `${handleBaseClass} -bottom-[5px] -left-[5px] h-3 w-3 cursor-nesw-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
+    case "bottom-right":
+      return `${handleBaseClass} -bottom-[5px] -right-[5px] h-3 w-3 cursor-nwse-resize shadow-[0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_20%,transparent)]`;
   }
 }
 
@@ -334,7 +374,6 @@ function App() {
       const column = index % config.columns;
       const row = Math.floor(index / config.columns);
       const adjustment = adjustments[index] ?? EMPTY_ADJUSTMENT;
-
       const baseX = config.offsetX + column * (config.frameWidth + config.gapX);
       const baseY = config.offsetY + row * (config.frameHeight + config.gapY);
       const sx = clamp(baseX + adjustment.dx, 0, sourceImage.width - 1);
@@ -350,15 +389,7 @@ function App() {
         sourceImage.height - sy,
       );
 
-      return {
-        index,
-        column,
-        row,
-        sx,
-        sy,
-        sw,
-        sh,
-      };
+      return { index, column, row, sx, sy, sw, sh };
     });
   }, [adjustments, config, frameCount, sourceImage]);
 
@@ -433,9 +464,7 @@ function App() {
       startDw: adjustment.dw,
       startDh: adjustment.dh,
     });
-    setStatus(
-      "Drag any edge or corner. The crop stays locked to a 1:1 ratio while resizing.",
-    );
+    setStatus("Drag any edge or corner to resize the crop freely.");
   }
 
   function applyUniformFrameSize() {
@@ -453,12 +482,13 @@ function App() {
     const reader = new FileReader();
     reader.onload = () => {
       if (typeof reader.result !== "string") return;
+      const result = reader.result;
 
       const image = new Image();
       image.onload = () => {
         setSourceImage({
           name: file.name.replace(/\.[^.]+$/, ""),
-          src: reader.result as string,
+          src: result,
           width: image.naturalWidth,
           height: image.naturalHeight,
         });
@@ -473,7 +503,7 @@ function App() {
           `Loaded ${file.name}. Adjust the grid until every frame box hugs the sprite cleanly.`,
         );
       };
-      image.src = reader.result;
+      image.src = result;
     };
     reader.readAsDataURL(file);
   }
@@ -578,19 +608,11 @@ function App() {
     const metadata = {
       source: sourceImage.name,
       frameRate: fps,
-      outputFrame: {
-        width: config.frameWidth,
-        height: config.frameHeight,
-      },
+      outputFrame: { width: config.frameWidth, height: config.frameHeight },
       grid: config,
       frames: frames.map((frame) => ({
         index: frame.index,
-        crop: {
-          x: frame.sx,
-          y: frame.sy,
-          width: frame.sw,
-          height: frame.sh,
-        },
+        crop: { x: frame.sx, y: frame.sy, width: frame.sw, height: frame.sh },
       })),
     };
 
@@ -604,451 +626,370 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
-      <header className="hero-bar">
-        <div>
-          <p className="eyebrow">Sprite Slicer</p>
-          <h1>
+    <div className="min-h-screen bg-[radial-gradient(circle_at_top,color-mix(in_oklch,var(--color-app-accent)_10%,transparent),transparent_40%),var(--color-app-bg)] px-3 py-4 text-app-text md:px-4 md:py-6">
+      <div className="mx-auto grid w-full max-w-360 gap-4">
+        <header className="flex gap-6 border border-app-border bg-app-surface p-6 shadow-panel  lg:items-end grid-cols-2">
+          <h1 className="font-display text-4xl leading-[0.98] tracking-[-0.04em] text-app-text sm:text-5xl lg:text-[3.8rem] flex">
             Cut messy generated sprite sheets into clean, previewable animation
             frames.
           </h1>
-        </div>
-        <div className="hero-copy">
-          <p>
-            Upload an image that already contains the sprite, place the slicing
-            grid, fix the bad cuts frame by frame, and export a rebuilt sheet.
-          </p>
-          <label className="upload-field primary-upload">
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              onChange={handleFileUpload}
-            />
-            <span>
-              {sourceImage ? "Replace source sheet" : "Upload sprite sheet"}
-            </span>
-          </label>
-        </div>
-      </header>
-
-      <main className="studio-grid">
-        <section className="panel control-panel">
-          <div className="panel-heading">
-            <p className="panel-label">Grid</p>
-            <h2>Slice setup</h2>
-          </div>
-
-          <div className="field-grid">
-            <label className="field">
-              <span>Columns</span>
-              <input
-                type="number"
-                min="1"
-                value={config.columns}
-                onChange={(event) =>
-                  updateConfig("columns", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Rows</span>
-              <input
-                type="number"
-                min="1"
-                value={config.rows}
-                onChange={(event) =>
-                  updateConfig("rows", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Frame width</span>
-              <input
-                type="number"
-                min="1"
-                value={config.frameWidth}
-                onChange={(event) =>
-                  updateConfig("frameWidth", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Frame height</span>
-              <input
-                type="number"
-                min="1"
-                value={config.frameHeight}
-                onChange={(event) =>
-                  updateConfig("frameHeight", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Offset X</span>
-              <input
-                type="number"
-                value={config.offsetX}
-                onChange={(event) =>
-                  updateConfig("offsetX", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Offset Y</span>
-              <input
-                type="number"
-                value={config.offsetY}
-                onChange={(event) =>
-                  updateConfig("offsetY", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Gap X</span>
-              <input
-                type="number"
-                value={config.gapX}
-                onChange={(event) =>
-                  updateConfig("gapX", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Gap Y</span>
-              <input
-                type="number"
-                value={config.gapY}
-                onChange={(event) =>
-                  updateConfig("gapY", Number(event.target.value))
-                }
-              />
-            </label>
-          </div>
-
-          <div className="compact-actions">
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={applyUniformFrameSize}
-              disabled={!sourceImage}
+          <div className="grid gap-3 justify-end max-w-sm">
+            <p className="m-0 max-w-[65ch] text-app-muted">
+              Upload an image that already contains the sprite, place the
+              slicing grid, fix the bad cuts frame by frame, and export a
+              rebuilt sheet.
+            </p>
+            <label
+              className={`${primaryButtonClass} relative inline-flex cursor-pointer items-center justify-center`}
             >
-              Auto-guess grid
-            </button>
-          </div>
-
-          <div className="panel-heading">
-            <p className="panel-label">Per frame</p>
-            <h2>Crop correction</h2>
-          </div>
-
-          <p className="hint">
-            Use these values to nudge the selected frame when one crop box is
-            misaligned.
-          </p>
-
-          <div className="field-grid">
-            <label className="field">
-              <span>Shift X</span>
               <input
-                type="number"
-                value={adjustments[selectedFrame]?.dx ?? 0}
-                onChange={(event) =>
-                  updateAdjustment("dx", Number(event.target.value))
-                }
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                onChange={handleFileUpload}
+                className="absolute inset-0 cursor-pointer opacity-0"
               />
-            </label>
-            <label className="field">
-              <span>Shift Y</span>
-              <input
-                type="number"
-                value={adjustments[selectedFrame]?.dy ?? 0}
-                onChange={(event) =>
-                  updateAdjustment("dy", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Width trim</span>
-              <input
-                type="number"
-                value={adjustments[selectedFrame]?.dw ?? 0}
-                onChange={(event) =>
-                  updateAdjustment("dw", Number(event.target.value))
-                }
-              />
-            </label>
-            <label className="field">
-              <span>Height trim</span>
-              <input
-                type="number"
-                value={adjustments[selectedFrame]?.dh ?? 0}
-                onChange={(event) =>
-                  updateAdjustment("dh", Number(event.target.value))
-                }
-              />
+              <span>
+                {sourceImage ? "Replace source sheet" : "Upload sprite sheet"}
+              </span>
             </label>
           </div>
+        </header>
 
-          <div className="compact-actions">
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={resetSelectedAdjustment}
-              disabled={!sourceImage}
-            >
-              Reset selected frame
-            </button>
-          </div>
-        </section>
-
-        <section className="panel workspace-panel">
-          <div className="panel-heading workspace-heading">
-            <div>
-              <p className="panel-label">Source</p>
-              <h2>
-                {sourceImage
-                  ? `${sourceImage.width} x ${sourceImage.height}`
-                  : "Upload an image to start slicing"}
+        <main className="grid gap-4 xl:grid-cols-[minmax(18rem,22rem)_minmax(0,1fr)_minmax(17rem,22rem)]">
+          <section className={panelClass}>
+            <div className="grid gap-1">
+              <p className={eyebrowClass}>Grid</p>
+              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                Slice setup
               </h2>
             </div>
-            <p className="hint">
-              Every overlay box represents one extracted frame.
-            </p>
-          </div>
 
-          {sourceImage ? (
-            <div className="source-stage" ref={sourceStageRef}>
-              <img
-                src={sourceImage.src}
-                alt="Uploaded sprite sheet"
-                className="source-image"
-              />
-              <div className="source-overlay">
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
+              {[
+                ["Columns", config.columns, "columns"],
+                ["Rows", config.rows, "rows"],
+                ["Frame width", config.frameWidth, "frameWidth"],
+                ["Frame height", config.frameHeight, "frameHeight"],
+                ["Offset X", config.offsetX, "offsetX"],
+                ["Offset Y", config.offsetY, "offsetY"],
+                ["Gap X", config.gapX, "gapX"],
+                ["Gap Y", config.gapY, "gapY"],
+              ].map(([label, value, key]) => (
+                <label key={String(key)} className={fieldClass}>
+                  <span className="text-[0.92rem] text-app-muted">{label}</span>
+                  <input
+                    type="number"
+                    min={
+                      key === "columns" ||
+                      key === "rows" ||
+                      key === "frameWidth" ||
+                      key === "frameHeight"
+                        ? "1"
+                        : undefined
+                    }
+                    value={value}
+                    onChange={(event) =>
+                      updateConfig(
+                        key as keyof SliceConfig,
+                        Number(event.target.value),
+                      )
+                    }
+                    className={inputClass}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={applyUniformFrameSize}
+                disabled={!sourceImage}
+              >
+                Auto-guess grid
+              </button>
+            </div>
+
+            <div className="grid gap-1">
+              <p className={eyebrowClass}>Per Frame</p>
+              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                Crop correction
+              </h2>
+            </div>
+
+            <p className="m-0 max-w-[65ch] text-app-muted">
+              Use these values to nudge the selected frame when one crop box is
+              misaligned.
+            </p>
+
+            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-2">
+              {[
+                ["Shift X", adjustments[selectedFrame]?.dx ?? 0, "dx"],
+                ["Shift Y", adjustments[selectedFrame]?.dy ?? 0, "dy"],
+                ["Width trim", adjustments[selectedFrame]?.dw ?? 0, "dw"],
+                ["Height trim", adjustments[selectedFrame]?.dh ?? 0, "dh"],
+              ].map(([label, value, key]) => (
+                <label key={String(key)} className={fieldClass}>
+                  <span className="text-[0.92rem] text-app-muted">{label}</span>
+                  <input
+                    type="number"
+                    value={value}
+                    onChange={(event) =>
+                      updateAdjustment(
+                        key as keyof FrameAdjustment,
+                        Number(event.target.value),
+                      )
+                    }
+                    className={inputClass}
+                  />
+                </label>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={resetSelectedAdjustment}
+                disabled={!sourceImage}
+              >
+                Reset selected frame
+              </button>
+            </div>
+          </section>
+
+          <section className={panelClass}>
+            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <div>
+                <p className={eyebrowClass}>Source</p>
+                <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                  {sourceImage
+                    ? `${sourceImage.width} x ${sourceImage.height}`
+                    : "Upload an image to start slicing"}
+                </h2>
+              </div>
+              <p className="m-0 max-w-[65ch] text-app-muted">
+                Every overlay box represents one extracted frame.
+              </p>
+            </div>
+
+            {sourceImage ? (
+              <div
+                ref={sourceStageRef}
+                className="relative border border-app-border bg-app-raised"
+              >
+                <img
+                  src={sourceImage.src}
+                  alt="Uploaded sprite sheet"
+                  className="block h-auto w-full"
+                />
+                <div className="absolute inset-0">
+                  {frames.map((frame) => (
+                    <button
+                      key={`overlay-${frame.index}`}
+                      type="button"
+                      className={`absolute m-0 overflow-visible border p-0 text-left shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--color-app-ink)_12%,transparent)] ${
+                        frame.index === selectedFrame
+                          ? "border-app-accent bg-[color-mix(in_oklch,var(--color-app-accent)_16%,var(--color-app-raised))]"
+                          : "border-app-border bg-[color-mix(in_oklch,var(--color-app-accent)_12%,transparent)]"
+                      }`}
+                      style={{
+                        left: `${(frame.sx / sourceImage.width) * 100}%`,
+                        top: `${(frame.sy / sourceImage.height) * 100}%`,
+                        width: `${(frame.sw / sourceImage.width) * 100}%`,
+                        height: `${(frame.sh / sourceImage.height) * 100}%`,
+                      }}
+                      onClick={() => {
+                        setSelectedFrame(frame.index);
+                        setPlayhead(frame.index);
+                        setIsPlaying(false);
+                      }}
+                    >
+                      <span className="pointer-events-none absolute left-[0.35rem] top-[0.3rem] text-[0.72rem] text-app-text">
+                        {frame.index + 1}
+                      </span>
+                      {frame.index === selectedFrame
+                        ? (
+                            [
+                              "left",
+                              "right",
+                              "top",
+                              "bottom",
+                              "top-left",
+                              "top-right",
+                              "bottom-left",
+                              "bottom-right",
+                            ] as ResizeMode[]
+                          ).map((mode) => (
+                            <span
+                              key={mode}
+                              className={getHandleClass(mode)}
+                              onPointerDown={(event) =>
+                                startResizeDrag(mode, event)
+                              }
+                            />
+                          ))
+                        : null}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="grid min-h-80 place-items-center border border-app-border bg-app-raised">
+                <p className="m-0 max-w-[65ch] text-app-muted">
+                  Upload a generated sprite sheet and the slicing controls will
+                  appear here.
+                </p>
+              </div>
+            )}
+
+            <div className="grid gap-3">
+              <div className="flex items-end justify-between gap-3">
+                <div>
+                  <p className={eyebrowClass}>Frames</p>
+                  <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                    {frameCount} slices
+                  </h2>
+                </div>
+              </div>
+
+              <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(7rem,1fr))]">
                 {frames.map((frame) => (
                   <button
-                    key={`overlay-${frame.index}`}
+                    key={`frame-${frame.index}`}
                     type="button"
-                    className={
+                    className={`grid gap-2 border p-2 text-left transition enabled:hover:-translate-y-px ${
                       frame.index === selectedFrame
-                        ? "slice-box active"
-                        : "slice-box"
-                    }
-                    style={{
-                      left: `${(frame.sx / sourceImage.width) * 100}%`,
-                      top: `${(frame.sy / sourceImage.height) * 100}%`,
-                      width: `${(frame.sw / sourceImage.width) * 100}%`,
-                      height: `${(frame.sh / sourceImage.height) * 100}%`,
-                    }}
+                        ? "border-app-accent bg-[color-mix(in_oklch,var(--color-app-accent)_16%,var(--color-app-raised))]"
+                        : "border-app-border bg-app-raised"
+                    }`}
                     onClick={() => {
                       setSelectedFrame(frame.index);
                       setPlayhead(frame.index);
                       setIsPlaying(false);
                     }}
                   >
-                    <span className="slice-box-label">{frame.index + 1}</span>
-                    {frame.index === selectedFrame ? (
-                      <>
-                        <span
-                          className="resize-handle resize-handle-left"
-                          onPointerDown={(event) =>
-                            startResizeDrag("left", event)
-                          }
+                    <span className={eyebrowClass}>
+                      {String(frame.index + 1).padStart(2, "0")}
+                    </span>
+                    <span className="block aspect-square overflow-hidden bg-[color-mix(in_oklch,var(--color-app-surface)_88%,var(--color-app-ink)_12%)]">
+                      {frameImageUrls[frame.index] ? (
+                        <img
+                          src={frameImageUrls[frame.index]}
+                          alt=""
+                          className="h-full w-full object-contain [image-rendering:pixelated]"
                         />
-                        <span
-                          className="resize-handle resize-handle-right"
-                          onPointerDown={(event) =>
-                            startResizeDrag("right", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-top"
-                          onPointerDown={(event) =>
-                            startResizeDrag("top", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-bottom"
-                          onPointerDown={(event) =>
-                            startResizeDrag("bottom", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-top-left"
-                          onPointerDown={(event) =>
-                            startResizeDrag("top-left", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-top-right"
-                          onPointerDown={(event) =>
-                            startResizeDrag("top-right", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-bottom-left"
-                          onPointerDown={(event) =>
-                            startResizeDrag("bottom-left", event)
-                          }
-                        />
-                        <span
-                          className="resize-handle resize-handle-bottom-right"
-                          onPointerDown={(event) =>
-                            startResizeDrag("bottom-right", event)
-                          }
-                        />
-                      </>
-                    ) : null}
+                      ) : (
+                        <span className="block h-full w-full" />
+                      )}
+                    </span>
                   </button>
                 ))}
               </div>
             </div>
-          ) : (
-            <div className="empty-state">
-              <p>
-                Upload a generated sprite sheet and the slicing controls will
-                appear here.
-              </p>
-            </div>
-          )}
+          </section>
 
-          <div className="timeline">
-            <div className="timeline-header">
-              <div>
-                <p className="panel-label">Frames</p>
-                <h2>{frameCount} slices</h2>
-              </div>
+          <section className={panelClass}>
+            <div className="grid gap-1">
+              <p className={eyebrowClass}>Preview</p>
+              <h2 className="font-display text-[1.2rem] leading-[1.1] tracking-[-0.04em] text-app-text">
+                Animation check
+              </h2>
             </div>
 
-            <div className="frame-strip">
-              {frames.map((frame) => (
-                <button
-                  key={`frame-${frame.index}`}
-                  type="button"
-                  className={
-                    frame.index === selectedFrame
-                      ? "frame-card active"
-                      : "frame-card"
-                  }
-                  onClick={() => {
-                    setSelectedFrame(frame.index);
-                    setPlayhead(frame.index);
-                    setIsPlaying(false);
+            <div className="grid min-h-80 place-items-center border border-app-border bg-app-raised p-4">
+              {sourceImage && previewFrame ? (
+                <span
+                  className="block w-full max-w-[18rem] overflow-hidden bg-[color-mix(in_oklch,var(--color-app-surface)_88%,var(--color-app-ink)_12%)]"
+                  style={{
+                    aspectRatio: `${config.frameWidth} / ${config.frameHeight}`,
                   }}
                 >
-                  <span className="frame-number">
-                    {String(frame.index + 1).padStart(2, "0")}
-                  </span>
-                  <span className="frame-thumb-shell">
-                    {frameImageUrls[frame.index] ? (
-                      <img
-                        src={frameImageUrls[frame.index]}
-                        alt=""
-                        className="frame-thumb"
-                      />
-                    ) : (
-                      <span className="frame-thumb placeholder" />
-                    )}
-                  </span>
-                </button>
-              ))}
+                  {frameImageUrls[previewFrame.index] ? (
+                    <img
+                      src={frameImageUrls[previewFrame.index]}
+                      alt=""
+                      className="h-full w-full object-contain [image-rendering:pixelated]"
+                    />
+                  ) : (
+                    <span className="block h-full w-full" />
+                  )}
+                </span>
+              ) : (
+                <p className="m-0 max-w-[65ch] text-app-muted">
+                  Playback preview appears after you upload a source sheet.
+                </p>
+              )}
             </div>
-          </div>
-        </section>
 
-        <section className="panel preview-panel">
-          <div className="panel-heading">
-            <p className="panel-label">Preview</p>
-            <h2>Animation check</h2>
-          </div>
-
-          <div className="preview-stage">
-            {sourceImage && previewFrame ? (
-              <span
-                className="preview-frame-shell"
-                style={{
-                  aspectRatio: `${config.frameWidth} / ${config.frameHeight}`,
-                }}
-              >
-                {frameImageUrls[previewFrame.index] ? (
-                  <img
-                    src={frameImageUrls[previewFrame.index]}
-                    alt=""
-                    className="preview-frame"
-                  />
-                ) : (
-                  <span className="preview-frame placeholder" />
-                )}
+            <label className={fieldClass}>
+              <span className="text-[0.92rem] text-app-muted">
+                Preview speed: {fps} fps
               </span>
-            ) : (
-              <p className="hint">
-                Playback preview appears after you upload a source sheet.
-              </p>
-            )}
-          </div>
+              <input
+                type="range"
+                min="1"
+                max="24"
+                value={fps}
+                onChange={(event) => setFps(Number(event.target.value))}
+                className="w-full accent-app-accent"
+              />
+            </label>
 
-          <label className="field">
-            <span>Preview speed: {fps} fps</span>
-            <input
-              type="range"
-              min="1"
-              max="24"
-              value={fps}
-              onChange={(event) => setFps(Number(event.target.value))}
-            />
-          </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={primaryButtonClass}
+                onClick={() => setIsPlaying((current) => !current)}
+                disabled={!sourceImage}
+              >
+                {isPlaying ? "Pause preview" : "Play preview"}
+              </button>
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={() => {
+                  setSelectedFrame(0);
+                  setPlayhead(0);
+                }}
+                disabled={!sourceImage}
+              >
+                Reset
+              </button>
+            </div>
 
-          <div className="compact-actions">
-            <button
-              type="button"
-              className="primary-action"
-              onClick={() => setIsPlaying((current) => !current)}
-              disabled={!sourceImage}
-            >
-              {isPlaying ? "Pause preview" : "Play preview"}
-            </button>
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={() => {
-                setSelectedFrame(0);
-                setPlayhead(0);
-              }}
-              disabled={!sourceImage}
-            >
-              Reset
-            </button>
-          </div>
+            <div className="grid gap-2">
+              <button
+                type="button"
+                className={primaryButtonClass}
+                onClick={exportSpriteSheet}
+                disabled={!sourceImage}
+              >
+                Export new sprite sheet
+              </button>
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={exportSelectedFrame}
+                disabled={!sourceImage}
+              >
+                Export selected frame
+              </button>
+              <button
+                type="button"
+                className={secondaryButtonClass}
+                onClick={exportMetadata}
+                disabled={!sourceImage}
+              >
+                Export slice metadata
+              </button>
+            </div>
 
-          <div className="export-stack">
-            <button
-              type="button"
-              className="primary-action"
-              onClick={exportSpriteSheet}
-              disabled={!sourceImage}
-            >
-              Export new sprite sheet
-            </button>
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={exportSelectedFrame}
-              disabled={!sourceImage}
-            >
-              Export selected frame
-            </button>
-            <button
-              type="button"
-              className="secondary-action"
-              onClick={exportMetadata}
-              disabled={!sourceImage}
-            >
-              Export slice metadata
-            </button>
-          </div>
-
-          <p className="status-copy">{status}</p>
-        </section>
-      </main>
+            <p className="m-0 max-w-[65ch] text-app-muted">{status}</p>
+          </section>
+        </main>
+      </div>
     </div>
   );
 }
